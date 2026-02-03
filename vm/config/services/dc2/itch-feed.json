@@ -1,0 +1,22 @@
+{
+  "service": {
+    "name": "itch-feed",
+    "id": "itch-feed-dc2",
+    "port": 9000,
+    "meta": {
+      "datacenter": "dc2",
+      "instanceRole": "secondary"
+    },
+    "check": {
+      "id": "itch-feed-tcp",
+      "tcp": "127.0.0.1:9000",
+      "interval": "5s",
+      "timeout": "1s",
+      "failures_before_critical": 3,
+      "success_before_passing": 3
+    },
+    "connect": {
+      "sidecar_service": {}
+    }
+  }
+}

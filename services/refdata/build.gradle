@@ -1,0 +1,14 @@
+plugins {
+    id 'application'
+}
+
+application {
+    mainClass = 'com.example.consulmesh.refdata.RefDataServer'
+}
+
+jar {
+    archiveFileName = 'refdata.jar'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+}

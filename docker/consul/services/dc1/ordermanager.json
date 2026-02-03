@@ -1,0 +1,31 @@
+{
+  "service": {
+    "name": "ordermanager",
+    "id": "ordermanager-dc1",
+    "port": 8081,
+    "meta": {
+      "datacenter": "dc1",
+      "instanceRole": "primary"
+    },
+    "check": {
+      "id": "ordermanager-health",
+      "http": "http://127.0.0.1:8081/actuator/health",
+      "interval": "5s",
+      "timeout": "1s",
+      "failures_before_critical": 3,
+      "success_before_passing": 3
+    },
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "refdata",
+              "local_bind_port": 18082
+            }
+          ]
+        }
+      }
+    }
+  }
+}

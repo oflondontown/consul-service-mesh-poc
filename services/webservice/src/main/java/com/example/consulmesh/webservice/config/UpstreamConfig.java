@@ -1,0 +1,24 @@
+package com.example.consulmesh.webservice.config;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestClient;
+
+@Configuration
+public class UpstreamConfig {
+    @Bean
+    public ServiceMetadata serviceMetadata() {
+        return ServiceMetadata.fromEnv();
+    }
+
+    @Bean
+    public RestClient refDataRestClient(@Value("${upstreams.refdata.base-url:http://localhost:18082}") String baseUrl) {
+        return RestClient.builder().baseUrl(baseUrl).build();
+    }
+
+    @Bean
+    public RestClient orderManagerRestClient(@Value("${upstreams.ordermanager.base-url:http://localhost:18083}") String baseUrl) {
+        return RestClient.builder().baseUrl(baseUrl).build();
+    }
+}

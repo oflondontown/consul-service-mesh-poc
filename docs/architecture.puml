@@ -1,0 +1,152 @@
+@startuml
+title Consul Service Mesh POC - Current Architecture
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam wrapWidth 220
+
+actor "GUI" as gui
+
+cloud "F5 VIP\n(health-checks /actuator/health\nin dc1 and dc2)" as f5
+
+node "Datacenter dc1 (primary)" as dc1 {
+  node "Consul Server (dc1)\nUI: :8500" as consulDc1
+
+  frame "mesh-gateway-dc1" as mg1 {
+    component "mesh-gateway\nEnvoy :8443\nadmin :19001" as mgw1
+  }
+
+  frame "webservice-dc1" as ws1 {
+    component "webservice\nSpring Boot\n:8080" as wsApp1
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as wsEnvoy1
+    component "Consul agent\n(service reg + checks)" as wsAgent1
+    wsAgent1 - wsEnvoy1
+    wsApp1 - wsEnvoy1
+  }
+
+  frame "ordermanager-dc1" as om1 {
+    component "ordermanager\nSpring Boot\n:8081" as omApp1
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as omEnvoy1
+    component "Consul agent\n(service reg + checks)" as omAgent1
+    omAgent1 - omEnvoy1
+    omApp1 - omEnvoy1
+  }
+
+  frame "refdata-dc1" as rd1 {
+    component "refdata\nvanilla Java\n:8082" as rdApp1
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as rdEnvoy1
+    component "Consul agent\n(service reg + checks)" as rdAgent1
+    rdAgent1 - rdEnvoy1
+    rdApp1 - rdEnvoy1
+  }
+
+  frame "itch-consumer-dc1" as ic1 {
+    component "itch-consumer\nvanilla Java\n:9100" as icApp1
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as icEnvoy1
+    component "Consul agent\n(service reg + checks)" as icAgent1
+    icAgent1 - icEnvoy1
+    icApp1 - icEnvoy1
+  }
+
+  frame "itch-feed-dc1" as if1 {
+    component "itch-feed\nvanilla Java\n:9000" as ifApp1
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as ifEnvoy1
+    component "Consul agent\n(service reg + checks)" as ifAgent1
+    ifAgent1 - ifEnvoy1
+    ifApp1 - ifEnvoy1
+  }
+}
+
+node "Datacenter dc2 (secondary/DR)" as dc2 {
+  node "Consul Server (dc2)\nUI: :8501" as consulDc2
+
+  frame "mesh-gateway-dc2" as mg2 {
+    component "mesh-gateway\nEnvoy :8443\nadmin :19001" as mgw2
+  }
+
+  frame "webservice-dc2" as ws2 {
+    component "webservice\nSpring Boot\n:8080" as wsApp2
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as wsEnvoy2
+    component "Consul agent\n(service reg + checks)" as wsAgent2
+    wsAgent2 - wsEnvoy2
+    wsApp2 - wsEnvoy2
+  }
+
+  frame "ordermanager-dc2" as om2 {
+    component "ordermanager\nSpring Boot\n:8081" as omApp2
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as omEnvoy2
+    component "Consul agent\n(service reg + checks)" as omAgent2
+    omAgent2 - omEnvoy2
+    omApp2 - omEnvoy2
+  }
+
+  frame "refdata-dc2" as rd2 {
+    component "refdata\nvanilla Java\n:8082" as rdApp2
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as rdEnvoy2
+    component "Consul agent\n(service reg + checks)" as rdAgent2
+    rdAgent2 - rdEnvoy2
+    rdApp2 - rdEnvoy2
+  }
+
+  frame "itch-feed-dc2" as if2 {
+    component "itch-feed\nvanilla Java\n:9000" as ifApp2
+    component "Envoy sidecar\nConnect proxy\nadmin :19000" as ifEnvoy2
+    component "Consul agent\n(service reg + checks)" as ifAgent2
+    ifAgent2 - ifEnvoy2
+    ifApp2 - ifEnvoy2
+  }
+}
+
+consulDc1 <--> consulDc2 : WAN federation\n(cross-DC discovery)
+mgw1 <--> mgw2 : mesh gateway mTLS\n:8443
+
+gui --> f5 : HTTP(S)\nGUI traffic
+f5 --> wsApp1 : active site\n(:8080)
+f5 --> wsApp2 : failover site\n(:8080)
+
+wsApp1 --> wsEnvoy1 : HTTP to upstream\nlocalhost:18082 (refdata)
+wsApp1 --> wsEnvoy1 : HTTP to upstream\nlocalhost:18083 (ordermanager)
+omApp1 --> omEnvoy1 : HTTP to upstream\nlocalhost:18082 (refdata)
+icApp1 --> icEnvoy1 : TCP to upstream\nlocalhost:19000 (itch-feed)
+
+wsEnvoy1 --> rdEnvoy1 : Connect mTLS (preferred)\nrefdata in dc1
+
+omEnvoy1 --> rdEnvoy1 : Connect mTLS (preferred)\nrefdata in dc1
+
+wsEnvoy1 --> omEnvoy1 : Connect mTLS (preferred)\nordermanager in dc1
+
+icEnvoy1 --> ifEnvoy1 : Connect mTLS (preferred)\nitch-feed in dc1
+
+wsEnvoy1 ..> mgw1 : cross-DC upstream traffic\n(MeshGateway.Mode=local)
+omEnvoy1 ..> mgw1 : cross-DC upstream traffic\n(MeshGateway.Mode=local)
+icEnvoy1 ..> mgw1 : cross-DC upstream traffic\n(MeshGateway.Mode=local)
+
+mgw2 ..> rdEnvoy2 : failover target\nrefdata in dc2
+mgw2 ..> omEnvoy2 : failover target\nordermanager in dc2
+mgw2 ..> ifEnvoy2 : failover target\nitch-feed in dc2
+
+note right of consulDc1
+Config entries (written to both DCs):
+- proxy-defaults (MeshGateway=local)
+- service-defaults (http/tcp)
+- intentions (allow rules)
+- service-resolver failover rules
+
+Anti-flap (hysteresis) on agent checks:
+- failures_before_critical = 3
+- success_before_passing = 3
+- interval = 5s, timeout = 1s
+end note
+
+note bottom of f5
+F5 monitors:
+- GET /actuator/health (webservice dc1 + dc2)
+Switching sites drops long-lived connections
+(WebSockets, SoupBinTCP); clients reconnect.
+end note
+
+legend right
+Solid arrow = normal routing (preferred DC)
+Dashed arrow = failover routing when preferred DC has no healthy endpoints
+endlegend
+@enduml

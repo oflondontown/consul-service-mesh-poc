@@ -1,0 +1,603 @@
+services:
+  consul-dc1:
+    image: docker.io/hashicorp/consul:1.17
+    command:
+      - consul
+      - agent
+      - -server
+      - -bootstrap-expect=1
+      - -node=consul-dc1
+      - -client=0.0.0.0
+      - -config-file=/consul/config/server.hcl
+    volumes:
+      - ./docker/consul/server-dc1.hcl:/consul/config/server.hcl:ro
+      - consul-dc1-data:/consul/data
+    ports:
+      - "8500:8500"
+    healthcheck:
+      test: ["CMD", "sh", "-ec", "wget -qO- http://127.0.0.1:8500/v1/status/leader | grep -q '8300'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [mesh]
+
+  consul-dc2:
+    image: docker.io/hashicorp/consul:1.17
+    command:
+      - consul
+      - agent
+      - -server
+      - -bootstrap-expect=1
+      - -node=consul-dc2
+      - -client=0.0.0.0
+      - -config-file=/consul/config/server.hcl
+    volumes:
+      - ./docker/consul/server-dc2.hcl:/consul/config/server.hcl:ro
+      - consul-dc2-data:/consul/data
+    ports:
+      - "8501:8500"
+    healthcheck:
+      test: ["CMD", "sh", "-ec", "wget -qO- http://127.0.0.1:8500/v1/status/leader | grep -q '8300'"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [mesh]
+
+  mesh-gateway-dc1:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:consul-dc1"
+    depends_on:
+      - consul-dc1
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul server (dc1)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc1" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001
+
+  mesh-gateway-dc2:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:consul-dc2"
+    depends_on:
+      - consul-dc2
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul server (dc2)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc2" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001
+
+  consul-config:
+    image: docker.io/hashicorp/consul:1.17
+    depends_on:
+      - consul-dc1
+      - consul-dc2
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-dc1:8500
+    volumes:
+      - ./docker/consul/config-entries:/config-entries:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul dc1 HTTP..."
+        for i in $(seq 1 60); do
+          consul info >/dev/null 2>&1 && break
+          sleep 1
+        done
+
+        echo "Waiting for WAN federation (dc1 <-> dc2)..."
+        for i in $(seq 1 60); do
+          if consul catalog datacenters | grep -q "dc2"; then
+            break
+          fi
+          sleep 1
+        done
+
+        echo "Writing config entries to dc1..."
+        consul config write -datacenter=dc1 /config-entries/proxy-defaults.hcl
+        consul config write -datacenter=dc1 /config-entries/service-defaults.hcl
+        consul config write -datacenter=dc1 /config-entries/intentions.hcl
+        consul config write -datacenter=dc1 /config-entries/refdata-resolver-dc1.hcl
+        consul config write -datacenter=dc1 /config-entries/ordermanager-resolver-dc1.hcl
+        consul config write -datacenter=dc1 /config-entries/itch-feed-resolver-dc1.hcl
+
+        echo "Writing config entries to dc2..."
+        consul config write -datacenter=dc2 /config-entries/proxy-defaults.hcl
+        consul config write -datacenter=dc2 /config-entries/service-defaults.hcl
+        consul config write -datacenter=dc2 /config-entries/intentions.hcl
+        consul config write -datacenter=dc2 /config-entries/refdata-resolver-dc2.hcl
+        consul config write -datacenter=dc2 /config-entries/ordermanager-resolver-dc2.hcl
+        consul config write -datacenter=dc2 /config-entries/itch-feed-resolver-dc2.hcl
+
+        echo "Done."
+    networks: [mesh]
+
+  webservice:
+    build:
+      context: .
+      dockerfile: services/webservice/Dockerfile
+    environment:
+      PORT: "8080"
+      SERVICE_NAME: webservice
+      SERVICE_ID: webservice-dc1
+      DATACENTER: dc1
+      INSTANCE_ROLE: primary
+      REFDATA_BASE_URL: http://127.0.0.1:18082
+      ORDERMANAGER_BASE_URL: http://127.0.0.1:18083
+    ports:
+      - "8080:8080"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  webservice-secondary:
+    build:
+      context: .
+      dockerfile: services/webservice/Dockerfile
+    environment:
+      PORT: "8080"
+      SERVICE_NAME: webservice
+      SERVICE_ID: webservice-dc2
+      DATACENTER: dc2
+      INSTANCE_ROLE: secondary
+      REFDATA_BASE_URL: http://127.0.0.1:18082
+      ORDERMANAGER_BASE_URL: http://127.0.0.1:18083
+    ports:
+      - "8084:8080"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  webservice-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:webservice"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc1/webservice.json:/consul/config/service.json:ro
+      - webservice-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=webservice-dc1
+      - -datacenter=dc1
+      - -retry-join=consul-dc1
+
+  webservice-secondary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:webservice-secondary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc2/webservice.json:/consul/config/service.json:ro
+      - webservice-secondary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=webservice-dc2
+      - -datacenter=dc2
+      - -retry-join=consul-dc2
+
+  webservice-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:webservice"
+    depends_on:
+      - webservice-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (webservice)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (webservice)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q webservice && break; sleep 1; done
+        consul connect envoy -sidecar-for webservice-dc1 -admin-bind 0.0.0.0:19000
+
+  webservice-secondary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:webservice-secondary"
+    depends_on:
+      - webservice-secondary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (webservice secondary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (webservice)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q webservice && break; sleep 1; done
+        consul connect envoy -sidecar-for webservice-dc2 -admin-bind 0.0.0.0:19000
+
+  ordermanager:
+    build:
+      context: .
+      dockerfile: services/ordermanager/Dockerfile
+    environment:
+      PORT: "8081"
+      SERVICE_NAME: ordermanager
+      SERVICE_ID: ordermanager-dc1
+      DATACENTER: dc1
+      INSTANCE_ROLE: primary
+      REFDATA_BASE_URL: http://127.0.0.1:18082
+    ports:
+      - "8081:8081"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  ordermanager-secondary:
+    build:
+      context: .
+      dockerfile: services/ordermanager/Dockerfile
+    environment:
+      PORT: "8081"
+      SERVICE_NAME: ordermanager
+      SERVICE_ID: ordermanager-dc2
+      DATACENTER: dc2
+      INSTANCE_ROLE: secondary
+      REFDATA_BASE_URL: http://127.0.0.1:18082
+    ports:
+      - "8085:8081"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  ordermanager-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:ordermanager"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc1/ordermanager.json:/consul/config/service.json:ro
+      - ordermanager-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=ordermanager-dc1
+      - -datacenter=dc1
+      - -retry-join=consul-dc1
+
+  ordermanager-secondary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:ordermanager-secondary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc2/ordermanager.json:/consul/config/service.json:ro
+      - ordermanager-secondary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=ordermanager-dc2
+      - -datacenter=dc2
+      - -retry-join=consul-dc2
+
+  ordermanager-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:ordermanager"
+    depends_on:
+      - ordermanager-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (ordermanager)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (ordermanager)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q ordermanager && break; sleep 1; done
+        consul connect envoy -sidecar-for ordermanager-dc1 -admin-bind 0.0.0.0:19000
+
+  ordermanager-secondary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:ordermanager-secondary"
+    depends_on:
+      - ordermanager-secondary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (ordermanager secondary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (ordermanager)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q ordermanager && break; sleep 1; done
+        consul connect envoy -sidecar-for ordermanager-dc2 -admin-bind 0.0.0.0:19000
+
+  refdata-primary:
+    build:
+      context: .
+      dockerfile: services/refdata/Dockerfile
+    environment:
+      PORT: "8082"
+      SERVICE_NAME: refdata
+      SERVICE_ID: refdata-dc1
+      DATACENTER: dc1
+      INSTANCE_ROLE: primary
+    ports:
+      - "28082:8082"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  refdata-primary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:refdata-primary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc1/refdata.json:/consul/config/service.json:ro
+      - refdata-primary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=refdata-dc1
+      - -datacenter=dc1
+      - -retry-join=consul-dc1
+
+  refdata-primary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:refdata-primary"
+    depends_on:
+      - refdata-primary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (refdata primary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (refdata)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q refdata && break; sleep 1; done
+        consul connect envoy -sidecar-for refdata-dc1 -admin-bind 0.0.0.0:19000
+
+  refdata-secondary:
+    build:
+      context: .
+      dockerfile: services/refdata/Dockerfile
+    environment:
+      PORT: "8082"
+      SERVICE_NAME: refdata
+      SERVICE_ID: refdata-dc2
+      DATACENTER: dc2
+      INSTANCE_ROLE: secondary
+    ports:
+      - "28083:8082"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  refdata-secondary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:refdata-secondary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc2/refdata.json:/consul/config/service.json:ro
+      - refdata-secondary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=refdata-dc2
+      - -datacenter=dc2
+      - -retry-join=consul-dc2
+
+  refdata-secondary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:refdata-secondary"
+    depends_on:
+      - refdata-secondary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (refdata secondary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (refdata)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q refdata && break; sleep 1; done
+        consul connect envoy -sidecar-for refdata-dc2 -admin-bind 0.0.0.0:19000
+
+  itch-feed-primary:
+    build:
+      context: .
+      dockerfile: services/itch-feed/Dockerfile
+    environment:
+      PORT: "9000"
+      SERVICE_NAME: itch-feed
+      SERVICE_ID: itch-feed-dc1
+      DATACENTER: dc1
+      INSTANCE_ROLE: primary
+    ports:
+      - "29000:9000"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  itch-feed-primary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-feed-primary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc1/itch-feed.json:/consul/config/service.json:ro
+      - itch-feed-primary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=itch-feed-dc1
+      - -datacenter=dc1
+      - -retry-join=consul-dc1
+
+  itch-feed-primary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-feed-primary"
+    depends_on:
+      - itch-feed-primary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (itch-feed primary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (itch-feed)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-feed && break; sleep 1; done
+        consul connect envoy -sidecar-for itch-feed-dc1 -admin-bind 0.0.0.0:19000
+
+  itch-feed-secondary:
+    build:
+      context: .
+      dockerfile: services/itch-feed/Dockerfile
+    environment:
+      PORT: "9000"
+      SERVICE_NAME: itch-feed
+      SERVICE_ID: itch-feed-dc2
+      DATACENTER: dc2
+      INSTANCE_ROLE: secondary
+    ports:
+      - "29001:9000"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  itch-feed-secondary-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-feed-secondary"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc2/itch-feed.json:/consul/config/service.json:ro
+      - itch-feed-secondary-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=itch-feed-dc2
+      - -datacenter=dc2
+      - -retry-join=consul-dc2
+
+  itch-feed-secondary-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-feed-secondary"
+    depends_on:
+      - itch-feed-secondary-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (itch-feed secondary)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (itch-feed)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-feed && break; sleep 1; done
+        consul connect envoy -sidecar-for itch-feed-dc2 -admin-bind 0.0.0.0:19000
+
+  itch-consumer:
+    build:
+      context: .
+      dockerfile: services/itch-consumer/Dockerfile
+    environment:
+      PORT: "9100"
+      SERVICE_NAME: itch-consumer
+      SERVICE_ID: itch-consumer-dc1
+      DATACENTER: dc1
+      INSTANCE_ROLE: primary
+      ITCH_HOST: 127.0.0.1
+      ITCH_PORT: "19000"
+    ports:
+      - "29100:9100"
+    depends_on:
+      - consul-config
+    networks: [mesh]
+
+  itch-consumer-consul:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-consumer"
+    depends_on:
+      - consul-config
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services/dc1/itch-consumer.json:/consul/config/service.json:ro
+      - itch-consumer-consul-data:/consul/data
+    command:
+      - consul
+      - agent
+      - -config-file=/consul/config/client.hcl
+      - -config-file=/consul/config/service.json
+      - -node=itch-consumer-dc1
+      - -datacenter=dc1
+      - -retry-join=consul-dc1
+
+  itch-consumer-envoy:
+    image: docker.io/hashicorp/consul:1.17
+    network_mode: "service:itch-consumer"
+    depends_on:
+      - itch-consumer-consul
+    environment:
+      CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for local Consul agent (itch-consumer)..."
+        for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (itch-consumer)..."
+        for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-consumer && break; sleep 1; done
+        consul connect envoy -sidecar-for itch-consumer-dc1 -admin-bind 0.0.0.0:19000
+
+networks:
+  mesh:
+
+volumes:
+  consul-dc1-data:
+  consul-dc2-data:
+  webservice-consul-data:
+  webservice-secondary-consul-data:
+  ordermanager-consul-data:
+  ordermanager-secondary-consul-data:
+  refdata-primary-consul-data:
+  refdata-secondary-consul-data:
+  itch-feed-primary-consul-data:
+  itch-feed-secondary-consul-data:
+  itch-consumer-consul-data:

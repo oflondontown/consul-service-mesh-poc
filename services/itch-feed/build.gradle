@@ -1,0 +1,14 @@
+plugins {
+    id 'application'
+}
+
+application {
+    mainClass = 'com.example.consulmesh.itch.ItchFeedServer'
+}
+
+jar {
+    archiveFileName = 'itch-feed.jar'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+}

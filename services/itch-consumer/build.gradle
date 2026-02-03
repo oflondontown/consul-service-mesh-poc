@@ -1,0 +1,14 @@
+plugins {
+    id 'application'
+}
+
+application {
+    mainClass = 'com.example.consulmesh.itch.ItchConsumer'
+}
+
+jar {
+    archiveFileName = 'itch-consumer.jar'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+}

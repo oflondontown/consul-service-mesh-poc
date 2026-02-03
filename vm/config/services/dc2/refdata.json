@@ -1,0 +1,22 @@
+{
+  "service": {
+    "name": "refdata",
+    "id": "refdata-dc2",
+    "port": 8082,
+    "meta": {
+      "datacenter": "dc2",
+      "instanceRole": "secondary"
+    },
+    "check": {
+      "id": "refdata-health",
+      "http": "http://127.0.0.1:8082/health",
+      "interval": "5s",
+      "timeout": "1s",
+      "failures_before_critical": 3,
+      "success_before_passing": 3
+    },
+    "connect": {
+      "sidecar_service": {}
+    }
+  }
+}
