@@ -1,0 +1,175 @@
+@startuml
+title New order request: GUI -> Webservice -> OrderManager -> RefData (Consul service mesh)
+
+skinparam shadowing false
+skinparam participantPadding 12
+skinparam boxPadding 10
+skinparam sequenceMessageAlign center
+
+autonumber
+
+actor "GUI user" as gui
+participant "F5 VIP\n(active site selection)" as f5
+
+box "dc1 (primary)" #DCEBFF
+  participant "Consul server #1\n(dc1, current leader)" as consul_s1_dc1
+  participant "Consul server #2\n(dc1, follower)" as consul_s2_dc1
+  participant "Consul server #3\n(dc1, follower)" as consul_s3_dc1
+  participant "Consul client agent\n(dc1 app VM)" as consul_agent_dc1
+  participant "Mesh gateway\n(dc1)" as mesh_gw_dc1
+
+  participant "Webservice app\n(Spring Boot)\n:8080" as ws_app_dc1
+  participant "Envoy sidecar\n(webservice)\n(admin)" as ws_envoy_dc1
+
+  participant "OrderManager app\n(Spring Boot)\n:8081" as om_app_dc1
+  participant "Envoy sidecar\n(ordermanager)\n(admin)" as om_envoy_dc1
+
+  participant "RefData app\n(vanilla Java)\n:8082" as rd_app_dc1
+  participant "Envoy sidecar\n(refdata)\n(admin)" as rd_envoy_dc1
+end box
+
+box "dc2 (DR)" #E3F7E6
+  participant "Consul server #1\n(dc2, current leader)" as consul_s1_dc2
+  participant "Consul server #2\n(dc2, follower)" as consul_s2_dc2
+  participant "Consul server #3\n(dc2, follower)" as consul_s3_dc2
+  participant "Consul client agent\n(dc2 app VM)" as consul_agent_dc2
+  participant "Mesh gateway\n(dc2)" as mesh_gw_dc2
+
+  participant "OrderManager app\n(Spring Boot)\n:8081" as om_app_dc2
+  participant "Envoy sidecar\n(ordermanager)\n(admin)" as om_envoy_dc2
+
+  participant "RefData app\n(vanilla Java)\n:8082" as rd_app_dc2
+  participant "Envoy sidecar\n(refdata)\n(admin)" as rd_envoy_dc2
+end box
+
+== Control plane (out-of-band) ==
+note over ws_envoy_dc1,consul_s3_dc2
+Consul is control-plane (not on the request path):
+- Consul agents run health checks (e.g. /actuator/health).
+- Consul servers store catalog + config-entries (service-resolver failover, intentions).
+- Each datacenter runs a Raft quorum (leader + followers): the leader commits writes; followers replicate state for HA.
+- Envoy sidecars receive xDS updates from their *local* Consul agent.
+Envoy uses those updates to pick healthy endpoints (and fail over if needed).
+end note
+
+loop every 5s (agent health checks)
+  consul_agent_dc1 -> ws_app_dc1 : GET /actuator/health
+  consul_agent_dc1 -> om_app_dc1 : GET /actuator/health
+  consul_agent_dc1 -> rd_app_dc1 : GET /health or /actuator/health
+end
+
+consul_agent_dc1 -> consul_s1_dc1 : publish check results\n(service health write)
+consul_s1_dc1 -> consul_s2_dc1 : Raft replicate
+consul_s1_dc1 -> consul_s3_dc1 : Raft replicate
+consul_s2_dc1 --> consul_s1_dc1 : ack
+consul_s3_dc1 --> consul_s1_dc1 : ack
+consul_s1_dc1 --> consul_agent_dc1 : OK
+
+ws_envoy_dc1 -> consul_agent_dc1 : xDS (ADS)\nclusters/routes/endpoints
+consul_agent_dc1 -> consul_s1_dc1 : read catalog + config-entries\n(blocking query / watch)
+consul_s1_dc1 <-> consul_s1_dc2 : WAN federation\n(cross-DC discovery)
+consul_s1_dc1 --> consul_agent_dc1 : endpoint updates\n(primary dc1 preferred)
+consul_agent_dc1 --> ws_envoy_dc1 : xDS response\n(EDS/CDS/RDS)
+
+== Data plane (new order request) ==
+gui -> f5 : POST /orders\n(new order request)
+
+alt Active webservice site = dc1 (normal)
+  f5 -> ws_app_dc1 : POST /orders
+else Active webservice site = dc2 (after site failover)
+  note right of f5
+  If webservice is active in dc2, the hop is the same\nbut starts in dc2 instead of dc1.
+  end note
+end
+
+opt Webservice validates/enriches via RefData (HTTP upstream)
+  ws_app_dc1 -> ws_envoy_dc1 : HTTP GET http://localhost:18082/refdata/...
+  alt RefData healthy in dc1
+    ws_envoy_dc1 -> rd_envoy_dc1 : mTLS (Connect)\n(refdata)
+    rd_envoy_dc1 -> rd_app_dc1 : HTTP GET /refdata/...
+    rd_app_dc1 --> rd_envoy_dc1 : 200 + payload
+    rd_envoy_dc1 --> ws_envoy_dc1 : 200 + payload
+  else RefData unhealthy in dc1 => failover to dc2
+    ws_envoy_dc1 -> mesh_gw_dc1 : mTLS to mesh-gateway\n(MeshGateway.Mode=local)
+    mesh_gw_dc1 -> mesh_gw_dc2 : mTLS :8443\n(cross-DC)
+    mesh_gw_dc2 -> rd_envoy_dc2 : mTLS (Connect)\n(refdata)
+    rd_envoy_dc2 -> rd_app_dc2 : HTTP GET /refdata/...
+    rd_app_dc2 --> rd_envoy_dc2 : 200 + payload
+    rd_envoy_dc2 --> mesh_gw_dc2 : 200 + payload
+    mesh_gw_dc2 --> mesh_gw_dc1 : 200 + payload
+    mesh_gw_dc1 --> ws_envoy_dc1 : 200 + payload
+  end
+  ws_envoy_dc1 --> ws_app_dc1 : 200 + payload
+end
+
+ws_app_dc1 -> ws_envoy_dc1 : HTTP POST http://localhost:18083/ordermanager/orders\n(create order)
+alt OrderManager healthy in dc1
+  ws_envoy_dc1 -> om_envoy_dc1 : mTLS (Connect)\n(ordermanager)
+  om_envoy_dc1 -> om_app_dc1 : HTTP POST /orders
+else OrderManager unhealthy in dc1 => failover to dc2
+  ws_envoy_dc1 -> mesh_gw_dc1 : mTLS to mesh-gateway\n(MeshGateway.Mode=local)
+  mesh_gw_dc1 -> mesh_gw_dc2 : mTLS :8443\n(cross-DC)
+  mesh_gw_dc2 -> om_envoy_dc2 : mTLS (Connect)\n(ordermanager)
+  om_envoy_dc2 -> om_app_dc2 : HTTP POST /orders
+end
+
+opt OrderManager uses RefData (e.g. instrument lookup / validation)
+  alt OrderManager instance is in dc1
+    om_app_dc1 -> om_envoy_dc1 : HTTP GET http://localhost:18182/refdata/...
+    alt RefData healthy in dc1
+      om_envoy_dc1 -> rd_envoy_dc1 : mTLS (Connect)\n(refdata)
+      rd_envoy_dc1 -> rd_app_dc1 : HTTP GET /refdata/...
+      rd_app_dc1 --> rd_envoy_dc1 : 200 + payload
+      rd_envoy_dc1 --> om_envoy_dc1 : 200 + payload
+    else RefData unhealthy in dc1 => failover to dc2
+      om_envoy_dc1 -> mesh_gw_dc1 : mTLS to mesh-gateway
+      mesh_gw_dc1 -> mesh_gw_dc2 : mTLS :8443
+      mesh_gw_dc2 -> rd_envoy_dc2 : mTLS (Connect)\n(refdata)
+      rd_envoy_dc2 -> rd_app_dc2 : HTTP GET /refdata/...
+      rd_app_dc2 --> rd_envoy_dc2 : 200 + payload
+      rd_envoy_dc2 --> mesh_gw_dc2 : 200 + payload
+      mesh_gw_dc2 --> mesh_gw_dc1 : 200 + payload
+      mesh_gw_dc1 --> om_envoy_dc1 : 200 + payload
+    end
+    om_envoy_dc1 --> om_app_dc1 : 200 + payload
+  else OrderManager instance is in dc2
+    om_app_dc2 -> om_envoy_dc2 : HTTP GET http://localhost:18182/refdata/...
+    alt RefData healthy in dc2
+      om_envoy_dc2 -> rd_envoy_dc2 : mTLS (Connect)\n(refdata)
+      rd_envoy_dc2 -> rd_app_dc2 : HTTP GET /refdata/...
+      rd_app_dc2 --> rd_envoy_dc2 : 200 + payload
+      rd_envoy_dc2 --> om_envoy_dc2 : 200 + payload
+    else RefData unhealthy in dc2 => failover to dc1
+      om_envoy_dc2 -> mesh_gw_dc2 : mTLS to mesh-gateway
+      mesh_gw_dc2 -> mesh_gw_dc1 : mTLS :8443
+      mesh_gw_dc1 -> rd_envoy_dc1 : mTLS (Connect)\n(refdata)
+      rd_envoy_dc1 -> rd_app_dc1 : HTTP GET /refdata/...
+      rd_app_dc1 --> rd_envoy_dc1 : 200 + payload
+      rd_envoy_dc1 --> mesh_gw_dc1 : 200 + payload
+      mesh_gw_dc1 --> mesh_gw_dc2 : 200 + payload
+      mesh_gw_dc2 --> om_envoy_dc2 : 200 + payload
+    end
+    om_envoy_dc2 --> om_app_dc2 : 200 + payload
+  end
+end
+
+alt OrderManager instance is in dc1
+  om_app_dc1 --> om_envoy_dc1 : 201 Created (orderId)
+  om_envoy_dc1 --> ws_envoy_dc1 : 201 Created (orderId)
+else OrderManager instance is in dc2
+  om_app_dc2 --> om_envoy_dc2 : 201 Created (orderId)
+  om_envoy_dc2 --> mesh_gw_dc2 : 201 Created (orderId)
+  mesh_gw_dc2 --> mesh_gw_dc1 : 201 Created (orderId)
+  mesh_gw_dc1 --> ws_envoy_dc1 : 201 Created (orderId)
+end
+
+ws_envoy_dc1 --> ws_app_dc1 : 201 Created (orderId)
+ws_app_dc1 --> f5 : 201 Created (orderId)
+f5 --> gui : 201 Created (orderId)
+
+note bottom
+RefData/OrderManager failover behaviour is driven by Consul config entries (service-resolver).
+Envoy performs the routing decisions based on which endpoints are healthy in the catalog.
+end note
+
+@enduml

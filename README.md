@@ -64,6 +64,7 @@ How this relates to a DR site:
   - `docker/consul/server-*.hcl` – Consul server configs for `dc1` and `dc2` (Connect enabled, UI enabled, WAN join).
   - `docker/consul/client.hcl` – Consul client config used by per-service local agents.
   - `docker/consul/services/dc1/*.json` and `docker/consul/services/dc2/*.json` – service registrations + health checks + Connect sidecar upstream listeners (the `local_bind_port` values).
+  - `docker/consul/services-vmhost/dc1/*.json` and `docker/consul/services-vmhost/dc2/*.json` – service registration templates for apps running on the VM while Consul/Envoy run in containers (uses `HOST_IP` substitution).
   - `docker/consul/config-entries/*.hcl` – central Consul config entries:
     - `service-defaults` (protocol http/tcp)
     - `service-intentions` (allowed callers)
@@ -74,6 +75,14 @@ How this relates to a DR site:
   - Non-root VM deployment scripts/config examples for RHEL 8.10 (run Consul agent + Envoy sidecar without containers): `vm/README.md`.
 - `docker-compose.yml`
   - Defines the two Consul datacenters, the mock services, and sidecars; mounts `docker/` configs into the appropriate containers.
+- `docker-compose.mesh-only.yml`
+  - Runs only Consul + Envoy (mesh) in containers (no app containers). Designed for Podman rootless (published ports) so your application services can stay as legacy processes on the VM.
+- `docker-compose.mesh-only.dc1.yml`
+  - Optional overlay for dc1-only services (adds the `itch-consumer` sidecar).
+- `docker-compose.mesh-only.hostnet.yml`
+  - Host-network variant of `docker-compose.mesh-only.yml` (requires a rootful engine / host networking support).
+- `docker-compose.mesh-only.hostnet.dc1.yml`
+  - dc1 overlay for `docker-compose.mesh-only.hostnet.yml`.
 - `build.gradle`, `settings.gradle`
   - Gradle multi-module build for the mock services (used by the Dockerfiles’ build stage).
 - `docs/`
@@ -126,9 +135,85 @@ ITCH/TCP demo:
 - Watch the consumer: `(docker|podman) compose logs -f itch-consumer`
 - Stop primary feed: `./scripts/failover-itch-feed.ps1`
 
+## Mesh-only quickstart (apps on VM, mesh in Podman/Docker)
+
+Use this mode when you want **Consul + Envoy in containers**, but your application services (`webservice`, `ordermanager`, `refdata`, etc.) run as **legacy processes on the VM**.
+
+Key points:
+
+- You run this Compose stack **once per VM** (so you run it on the dc1 VM and on the dc2 VM).
+- This stack **does not start your applications**; it only provides the mesh (Consul + mesh gateway + Envoy sidecars).
+- In this repo, the Consul process is started in **server mode** and also acts as the **local agent** that runs the health checks for the VM-hosted apps.
+
+### Containers per VM (this repo)
+
+- `consul` (server+agent; registers services and runs health checks)
+- `consul-config` (one-shot; applies config entries like service-resolver failover rules)
+- `mesh-gateway` (cross-datacenter data-plane hop on `:8443`)
+- One Envoy sidecar container per service:
+  - `webservice-envoy`, `ordermanager-envoy`, `refdata-envoy`, `itch-feed-envoy`
+  - `itch-consumer-envoy` is dc1-only via `docker-compose.mesh-only.dc1.yml`
+
+### Required environment variables
+
+- `CONSUL_DATACENTER=dc1|dc2`
+- `HOST_IP=<this VM IP>` (must be reachable by the other DC; used for advertise + health check targets + mesh gateway WAN address)
+
+### Typical environment variables
+
+- `CONSUL_BOOTSTRAP_EXPECT=1` (or `3` if you run 3 Consul servers in the same datacenter)
+- `CONSUL_RETRY_JOIN=<comma-separated LAN peers>` (used when you have multiple servers/agents in the same DC)
+- `CONSUL_RETRY_JOIN_WAN=<comma-separated WAN peers>` (used to federate dc1 <-> dc2; set to the *other* DC's `HOST_IP`)
+- `CONSUL_ENCRYPT=<gossip key>` (recommended outside a POC)
+
+### Start (example commands)
+
+On the **dc1 VM**:
+
+- Bash: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN_WAN=10.0.1.10 podman compose -f docker-compose.mesh-only.yml -f docker-compose.mesh-only.dc1.yml up -d`
+- PowerShell:
+  - `$env:CONSUL_DATACENTER="dc1"; $env:HOST_IP="10.0.0.10"; $env:CONSUL_RETRY_JOIN_WAN="10.0.1.10"`
+  - `podman compose -f docker-compose.mesh-only.yml -f docker-compose.mesh-only.dc1.yml up -d`
+
+On the **dc2 VM**:
+
+- Bash: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN_WAN=10.0.0.10 podman compose -f docker-compose.mesh-only.yml up -d`
+- PowerShell:
+  - `$env:CONSUL_DATACENTER="dc2"; $env:HOST_IP="10.0.1.10"; $env:CONSUL_RETRY_JOIN_WAN="10.0.0.10"`
+  - `podman compose -f docker-compose.mesh-only.yml up -d`
+
+### App ports and local upstream ports
+
+This mode assumes your apps are listening on these **VM ports** (edit the service templates if yours differ):
+
+- `webservice`: `:8080` (Actuator health at `/actuator/health`)
+- `ordermanager`: `:8081` (Actuator health at `/actuator/health`)
+- `refdata`: `:8082` (health at `/health`)
+- `itch-feed`: `:9000` (TCP check)
+- `itch-consumer` (dc1 only): `:9100` (health at `/health`)
+
+Your apps must call **local** Envoy upstream listeners (stable per environment):
+
+- `webservice` -> `refdata`: `http://127.0.0.1:18082`
+- `webservice` -> `ordermanager`: `http://127.0.0.1:18083`
+- `ordermanager` -> `refdata`: `http://127.0.0.1:18182`
+- `itch-consumer` -> `itch-feed`: `127.0.0.1:19100` (TCP)
+
+Where to change these mappings:
+
+- Service registration templates + check URLs: `docker/consul/services-vmhost/dc1/*.json`, `docker/consul/services-vmhost/dc2/*.json`
+- Host-published upstream/admin/sidecar ports: `docker-compose.mesh-only.yml` (and `docker-compose.mesh-only.dc1.yml`)
+
 ## Podman Desktop notes (Windows/macOS/Linux)
 
-- Podman uses the same Compose file: `docker-compose.yml` (the filename is historical — it’s still the standard Compose spec).
+- This repo includes multiple Compose files:
+  - `docker-compose.yml` (everything containerised)
+  - `docker-compose.mesh-only.yml` (+ optional `docker-compose.mesh-only.dc1.yml`) for “apps on VM, mesh in containers” (rootless-friendly)
+  - `docker-compose.mesh-only.hostnet.yml` (+ optional `docker-compose.mesh-only.hostnet.dc1.yml`) for host networking (rootful engines only)
+- Rootless vs rootful (Podman terminology):
+  - Rootless = containers run as your user (no sudo). Host networking is typically not available, so use the published-port approach (`docker-compose.mesh-only.yml`).
+  - Rootful = containers run as root. Host networking may be available, so you can use `docker-compose.mesh-only.hostnet.yml`.
+- Podman uses the same Compose spec as Docker; these files work with `podman compose` or `podman-compose`.
 - Ensure Podman is running:
   - Windows/macOS typically require a VM: `podman machine start`
 - Ensure Compose is available:
@@ -146,6 +231,8 @@ Failover is **not** an app setting. It’s mesh configuration:
 - Service definitions + upstream listener ports:
   - `docker/consul/services/dc1/*.json`
   - `docker/consul/services/dc2/*.json`
+  - `docker/consul/services-vmhost/dc1/*.json` (apps on VM; Consul/Envoy in containers)
+  - `docker/consul/services-vmhost/dc2/*.json` (apps on VM; Consul/Envoy in containers)
 - Failover policy:
   - `docker/consul/config-entries/refdata-resolver-dc1.hcl`
   - `docker/consul/config-entries/refdata-resolver-dc2.hcl`

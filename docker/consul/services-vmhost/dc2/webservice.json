@@ -1,0 +1,39 @@
+{
+  "service": {
+    "name": "webservice",
+    "id": "webservice-dc2",
+    "address": "__HOST_IP__",
+    "port": 8080,
+    "meta": {
+      "datacenter": "dc2",
+      "instanceRole": "secondary"
+    },
+    "check": {
+      "id": "webservice-health",
+      "http": "http://__HOST_IP__:8080/actuator/health",
+      "interval": "5s",
+      "timeout": "1s",
+      "failures_before_critical": 3,
+      "success_before_passing": 3
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21000,
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "refdata",
+              "local_bind_address": "0.0.0.0",
+              "local_bind_port": 18082
+            },
+            {
+              "destination_name": "ordermanager",
+              "local_bind_address": "0.0.0.0",
+              "local_bind_port": 18083
+            }
+          ]
+        }
+      }
+    }
+  }
+}
