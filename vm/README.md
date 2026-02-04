@@ -1,6 +1,6 @@
 # Non-root VM deployment (RHEL 8.10)
 
-This folder provides **non-root** (user-level) scripts and example configs to run the same Consul + Envoy service-mesh pattern as the Docker/Podman MVP, but on **VMs**.
+This folder provides **non-root** (user-level) scripts and example configs to run the same Consul + Envoy service-mesh pattern as the container MVP (Podman), but on **VMs**.
 
 Assumptions:
 

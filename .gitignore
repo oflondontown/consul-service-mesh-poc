@@ -6,3 +6,6 @@ out/
 *.iml
 *.log
 .DS_Store
+.env
+scripts/prod/*.env
+run/

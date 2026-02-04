@@ -1,11 +1,15 @@
+#
+# dc1-only add-on for `docker-compose.poc.single-vm.yml`
+# (Adds the demo `itch-consumer` sidecar.)
+#
 services:
   itch-consumer-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
-      - consul-agent
+      - consul-config
     environment:
-      CONSUL_HTTP_ADDR: http://consul-agent:8500
-      CONSUL_GRPC_ADDR: http://consul-agent:8502
+      CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       SERVICE_ID: itch-consumer-${CONSUL_DATACENTER}
       ENVOY_ADMIN_BIND: 0.0.0.0:29004
@@ -15,20 +19,20 @@ services:
       - sh
       - -ec
       - |
-        echo "Waiting for Consul agent..."
-        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for Consul..."
+        for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (${SERVICE_ID})..."
-        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
-        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        for i in $(seq 1 180); do wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
 
         echo "Generating Envoy bootstrap for ${SERVICE_ID}..."
         consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
 
   itch-consumer-envoy:
     image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    restart: unless-stopped
     depends_on:
       - itch-consumer-envoy-bootstrap
-    restart: unless-stopped
     volumes:
       - itch-consumer-envoy-bootstrap:/bootstrap:ro
     command:

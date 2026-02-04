@@ -117,13 +117,13 @@ services:
         echo "Done."
     networks: [mesh]
 
-  mesh-gateway:
+  mesh-gateway-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul-server:8500
+      CONSUL_GRPC_ADDR: http://consul-server:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
 
       # Required: address that other nodes in the same DC can reach.
@@ -133,6 +133,9 @@ services:
       MESH_GATEWAY_WAN_ADDRESS: ${MESH_GATEWAY_WAN_ADDRESS:-${MESH_GATEWAY_ADDRESS}}
 
       ENVOY_ADMIN_BIND: 0.0.0.0:29100
+      EXPOSE_SERVERS: ${EXPOSE_SERVERS:-0}
+    volumes:
+      - mesh-gateway-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -145,12 +148,29 @@ services:
         echo "Waiting for local Consul..."
         for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
 
-        echo "Starting mesh gateway mesh-gateway-${CONSUL_DATACENTER}..."
-        exec consul connect envoy -gateway=mesh -register \
-          -service "mesh-gateway-${CONSUL_DATACENTER}" \
-          -address "${MESH_GATEWAY_ADDRESS}" \
-          -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" \
-          -admin-bind "${ENVOY_ADMIN_BIND}"
+        args=(connect envoy -gateway=mesh -register -service "mesh-gateway-${CONSUL_DATACENTER}" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap)
+        if [ "${EXPOSE_SERVERS:-0}" = "1" ]; then
+          args+=( -expose-servers )
+        fi
+
+        echo "Generating mesh gateway bootstrap..."
+        consul "${args[@]}" >/bootstrap/bootstrap.json
+
+  mesh-gateway:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - mesh-gateway-bootstrap
+    restart: unless-stopped
+    volumes:
+      - mesh-gateway-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "8443:8443"
       - "127.0.0.1:29100:29100"
@@ -158,6 +178,7 @@ services:
 
 volumes:
   consul-server-data:
+  mesh-gateway-bootstrap:
 
 networks:
   mesh:

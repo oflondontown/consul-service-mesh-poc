@@ -9,12 +9,12 @@ This repo is a runnable POC that demonstrates **automatic primary → secondary 
 - When **dc1 `refdata` becomes unhealthy**, Consul’s `service-resolver` failover routes traffic to **dc2 `refdata`** automatically.
 - A TCP example (`itch-feed` + `itch-consumer`) shows the same pattern works for **non-HTTP (TCP)** traffic.
 
-## Architecture (docker compose)
+## Architecture (Compose)
 
 - Two Consul datacenters: `dc1` and `dc2` (WAN federated).
 - A mesh gateway runs in each datacenter (data-plane hop for cross-DC traffic, port `:8443`).
 - Each app has:
-  - the app container
+  - the app workload (container or host process)
   - a **local Consul client agent** (registers the service + health check)
   - an **Envoy sidecar** (Connect proxy)
 
@@ -53,7 +53,7 @@ How this relates to a DR site:
 ## Repository layout
 
 - `services/`
-  - Application code (mock services) and their Dockerfiles.
+  - Application code (mock services) and their container build files (Dockerfile format; works with Podman).
   - `services/webservice/` – Spring Boot “frontend” service; calls `refdata` + `ordermanager`; includes a WebSocket echo endpoint.
   - `services/ordermanager/` – Spring Boot service; calls `refdata`.
   - `services/refdata/` – vanilla Java HTTP service; exposes `/api/refdata/{key}` and a small admin toggle to simulate failure.
@@ -70,15 +70,15 @@ How this relates to a DR site:
     - `service-intentions` (allowed callers)
     - `service-resolver` (cross-datacenter failover rules)
 - `scripts/`
-  - Convenience wrappers for starting/stopping the stack and running a simple failover demo (supports Docker or Podman).
+  - Convenience wrappers for starting/stopping the stack and running a simple failover demo (Podman).
 - `vm/`
   - Non-root VM deployment scripts/config examples for RHEL 8.10 (run Consul agent + Envoy sidecar without containers): `vm/README.md`.
 - `docker-compose.yml`
   - Defines the two Consul datacenters, the mock services, and sidecars; mounts `docker/` configs into the appropriate containers.
-- `docker-compose.mesh-only.yml`
-  - Runs only Consul + Envoy (mesh) in containers (no app containers). Designed for Podman rootless (published ports) so your application services can stay as legacy processes on the VM.
-- `docker-compose.mesh-only.dc1.yml`
-  - Optional overlay for dc1-only services (adds the `itch-consumer` sidecar).
+- `docker-compose.poc.single-vm.yml`
+  - Single-VM POC mesh stack: runs Consul + mesh gateway + Envoy sidecars in containers (no app containers), so your application services can stay as legacy processes on the VM.
+- `docker-compose.poc.single-vm.dc1.yml`
+  - Optional overlay for dc1-only services (adds the demo `itch-consumer` sidecar).
 - `docker-compose.prod.server.yml`
   - Production-shaped: runs a **Consul server + mesh gateway** on a dedicated Consul VM (run on multiple VMs per DC for quorum/HA).
 - `docker-compose.prod.app.yml`
@@ -86,7 +86,7 @@ How this relates to a DR site:
 - `docker-compose.prod.app.dc1.yml`
   - dc1 overlay for `docker-compose.prod.app.yml` (adds the demo `itch-consumer` sidecar).
 - `build.gradle`, `settings.gradle`
-  - Gradle multi-module build for the mock services (used by the Dockerfiles’ build stage).
+  - Gradle multi-module build for the mock services (used by the container build stage).
 - `docs/`
   - Project documentation, including PlantUML diagrams:
     - `docs/architecture.puml` (current runtime architecture)
@@ -96,25 +96,36 @@ How this relates to a DR site:
 
 ## Quickstart
 
+If you want a copy/paste walkthrough, see: `quickstart/README.md`.
+
 Prereqs:
 
-- A container engine with Compose support:
-  - Docker Desktop / Docker Engine (`docker compose`)
-  - Podman Desktop / Podman (`podman compose` or `podman-compose`)
+- For the **all-in-one container demo** (`docker-compose.yml`): Podman with a Compose frontend:
+  - `podman compose` (plugin) or `podman-compose`
+- For the **prod-shaped demo** (apps as host processes, mesh in containers): Podman only (no Compose provider required) using `scripts/prod/*`.
 
 Start:
 
-- PowerShell (auto-detect engine): `./scripts/start.ps1`
-- PowerShell (force Podman): `./scripts/start.ps1 -Engine podman`
-- PowerShell (force Docker): `./scripts/start.ps1 -Engine docker`
-- PowerShell (env var): `$env:CONTAINER_ENGINE="podman"; ./scripts/start.ps1`
-- Bash (auto-detect engine): `./scripts/start.sh`
-- Bash (force Podman): `CONTAINER_ENGINE=podman ./scripts/start.sh`
+- `./scripts/start.sh`
+  - Starts the **all-in-one container demo** in `docker-compose.yml` (both DCs + mock services).
+
+Status / stop:
+
+- Status: `./scripts/status.sh`
+- Stop: `./scripts/stop.sh` (add `REMOVE_VOLUMES=1` for a clean reset)
+
+If you want to simulate production more closely (apps as host processes, Consul/Envoy in containers), skip to **Production quickstart** below.
 
 UIs:
 
 - Consul dc1 UI: `http://localhost:8500`
 - Consul dc2 UI: `http://localhost:8501`
+
+What to look for in the Consul UI:
+
+- In **dc1 UI**, open **Services** and confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway-dc1`.
+- In **dc2 UI**, confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway-dc2`.
+- Open `refdata` in **dc1** and you should see `refdata-dc1` as **passing** initially.
 
 Service endpoints (local dev):
 
@@ -125,17 +136,22 @@ Service endpoints (local dev):
 
 Smoke test (includes a refdata failover + restore):
 
-- PowerShell: `./scripts/smoke-test.ps1`
+- `./scripts/smoke-test.sh`
 
 Manual refdata failover toggle:
 
-- Disable primary (dc1): `./scripts/failover-refdata.ps1`
-- Re-enable primary (dc1): `./scripts/restore-refdata.ps1`
+- Disable primary (dc1): `./scripts/failover-refdata.sh`
+- Re-enable primary (dc1): `./scripts/restore-refdata.sh`
+
+Notes:
+
+- Health check hysteresis is enabled (3 failing checks to mark critical, 3 passing checks to recover). With 5s intervals, failover/failback usually takes ~15–30 seconds end-to-end.
+- The smoke test disables **dc1** `refdata` (returns HTTP 503 on `/health`) and waits until `webservice` starts returning `refdata.datacenter=dc2`.
 
 ITCH/TCP demo:
 
-- Watch the consumer: `(docker|podman) compose logs -f itch-consumer`
-- Stop primary feed: `./scripts/failover-itch-feed.ps1`
+- Watch the consumer: `podman compose logs -f itch-consumer` (or `podman-compose logs -f itch-consumer`)
+- Stop primary feed: `podman compose stop itch-feed-primary` (or `podman-compose stop itch-feed-primary`)
 
 ## Production quickstart (apps on VM, dedicated Consul servers)
 
@@ -146,16 +162,19 @@ This is the recommended topology if you can run **dedicated Consul server VMs** 
 - On each **Consul server VM** (`docker-compose.prod.server.yml`):
   - `consul-server` (server process; participates in quorum)
   - `consul-config` (one-shot; writes config entries like `service-resolver` failover policy)
-  - `mesh-gateway` (cross-DC data-plane hop on `:8443`)
+  - `mesh-gateway` (Envoy mesh gateway, cross-DC data-plane hop on `:8443`)
 - On each **application VM** (`docker-compose.prod.app.yml`):
   - `consul-agent` (client agent; registers services + runs health checks)
-  - Sidecars: `webservice-envoy`, `ordermanager-envoy`, `refdata-envoy`, `itch-feed-envoy`
+  - Sidecars (Envoy): `webservice-envoy`, `ordermanager-envoy`, `refdata-envoy`, `itch-feed-envoy`
   - Optional dc1-only demo: `itch-consumer-envoy` via `docker-compose.prod.app.dc1.yml`
+
+Note: the official `hashicorp/consul` image does **not** include an `envoy` binary. These Compose files run Envoy from `${ENVOY_IMAGE}` and use one-shot `*-bootstrap` containers (Consul CLI) to generate `/bootstrap/bootstrap.json`. Seeing `*-bootstrap` containers exit is expected.
 
 ### Required environment variables
 
 - `CONSUL_DATACENTER=dc1|dc2`
 - `HOST_IP=<this VM IP>` (used for advertise + health check targets + mesh gateway address)
+- Optional: `ENVOY_IMAGE=docker.io/envoyproxy/envoy:v1.29-latest` (override the Envoy image/tag)
 
 ### Start (example commands)
 
@@ -175,6 +194,69 @@ dc2 application VM:
 
 - `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN=10.0.1.21,10.0.1.22,10.0.1.23 podman compose -f docker-compose.prod.app.yml up -d`
 
+### Start without Compose (Podman only)
+
+If you **cannot / do not want to install a Compose provider** (`podman-compose`) on the VM, you can start the same containers using **Podman pods** + wrapper scripts (no `podman compose` needed):
+
+- Create per-VM env files (recommended):
+  - Server VM: `cp scripts/prod/server.env.example scripts/prod/server.env` (edit values)
+  - App VM: `cp scripts/prod/app.env.example scripts/prod/app.env` (edit values)
+  - Or start from the provided MVP examples and copy the right one for each VM:
+    - `scripts/prod/server.dc1.env`, `scripts/prod/server.dc2.env`
+    - `scripts/prod/app.dc1.env`, `scripts/prod/app.dc2.env`
+- dc1 Consul server VM(s): `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.21 CONSUL_RETRY_JOIN=10.0.0.21,10.0.0.22,10.0.0.23 CONSUL_RETRY_JOIN_WAN=10.0.1.21,10.0.1.22,10.0.1.23 ./scripts/prod/podman-up-server.sh`
+- dc1 application VM: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN=10.0.0.21,10.0.0.22,10.0.0.23 ./scripts/prod/podman-up-app.sh`
+- dc2 Consul server VM(s): `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.21 CONSUL_RETRY_JOIN=10.0.1.21,10.0.1.22,10.0.1.23 CONSUL_RETRY_JOIN_WAN=10.0.0.21,10.0.0.22,10.0.0.23 ./scripts/prod/podman-up-server.sh`
+- dc2 application VM: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN=10.0.1.21,10.0.1.22,10.0.1.23 ./scripts/prod/podman-up-app.sh`
+
+Once you have `scripts/prod/server.env` / `scripts/prod/app.env` on the VM, you can simply run:
+
+- Server VM: `./scripts/prod/podman-up-server.sh` (or `./scripts/prod/podman-up-server.sh --env-file scripts/prod/server.env`)
+- App VM: `./scripts/prod/podman-up-app.sh` (or `./scripts/prod/podman-up-app.sh --env-file scripts/prod/app.env`)
+
+Stop:
+
+- Server VM: `CONSUL_DATACENTER=dc1 ./scripts/prod/podman-down-server.sh` (add `REMOVE_VOLUMES=1` to delete volumes)
+- App VM: `CONSUL_DATACENTER=dc1 ./scripts/prod/podman-down-app.sh` (add `REMOVE_VOLUMES=1` to delete volumes)
+
+If you created env files, you can stop without prefixing env vars:
+
+- Server VM: `./scripts/prod/podman-down-server.sh`
+- App VM: `./scripts/prod/podman-down-app.sh`
+
+### Start mock apps on the application VM (non-container)
+
+This repo includes simple **mock implementations** of your services under `services/`. To run them as **host processes** (closer to your “legacy on VM” model):
+
+- Build jars (on each app VM; requires Java + Gradle): `./scripts/mock/build-jars.sh`
+- Start mocks:
+  - dc1 app VM: `./scripts/mock/start-mocks.sh --dc dc1`
+  - dc2 app VM: `./scripts/mock/start-mocks.sh --dc dc2`
+- Stop mocks:
+  - `./scripts/mock/stop-mocks.sh --dc dc1` (or `--dc dc2`)
+
+Once running, services should show as **passing** in the Consul UI (because the Consul agent checks `/actuator/health` or `/health`).
+
+### View the Consul UI (prod-shaped)
+
+In `docker-compose.prod.server.yml` and `scripts/prod/podman-up-server.sh`, the Consul UI/HTTP API is published on `127.0.0.1:8500` on the **server VM**.
+
+- If you are running locally on that VM: open `http://localhost:8500/ui`
+- If you are connecting from your laptop via SSH, use a tunnel (examples):
+  - dc1: `ssh -L 8500:127.0.0.1:8500 <user>@<dc1-consul-server>`
+  - dc2: `ssh -L 8501:127.0.0.1:8500 <user>@<dc2-consul-server>` then open `http://localhost:8501/ui`
+
+### Test failover (prod-shaped)
+
+Run on the **dc1 application VM** (where `webservice` is active for this demo):
+
+- Baseline: `curl -fsS http://127.0.0.1:8080/api/refdata/demo`
+- Trigger refdata failover: `./scripts/failover-refdata.sh`
+- Watch it fail over (should now show `refdata.datacenter=dc2`): `curl -fsS http://127.0.0.1:8080/api/refdata/demo`
+- Restore: `./scripts/restore-refdata.sh`
+
+Or run the scripted flow: `./scripts/smoke-test.sh`
+
 ### App ports and local upstream ports (same as the POC)
 
 Your apps call local upstream listeners on the VM (stable per environment):
@@ -189,36 +271,62 @@ Where to change these mappings:
 - Service registration templates + check URLs: `docker/consul/services-vmhost/dc1/*.json`, `docker/consul/services-vmhost/dc2/*.json`
 - Host-published upstream/admin/sidecar ports: `docker-compose.prod.app.yml` (and `docker-compose.prod.app.dc1.yml`)
 
+### Port mapping cheat sheet (Consul ↔ Envoy ↔ host apps)
+
+In this repo, **Consul is the source of truth** for proxy ports and upstreams. Envoy binds to whatever Consul tells it to bind to (via `consul connect envoy ... -bootstrap`).
+
+For each service registration (`docker/consul/services-vmhost/<dc>/*.json`):
+
+- `service.port`: the **app’s inbound port** on the VM (e.g. `webservice` `8080`, `ordermanager` `8081`, `refdata` `8082`, `itch-feed` `9000`).
+- `connect.sidecar_service.port`: the **Envoy sidecar inbound port** (reachable by the mesh). In this repo: `21000+`.
+- `connect.sidecar_service.proxy.upstreams[].local_bind_port`: the **local “upstream” listener** the app calls (loopback on the VM). In this repo:
+  - `webservice` uses `18082` (refdata) and `18083` (ordermanager)
+  - `ordermanager` uses `18182` (refdata) to avoid clashing with webservice on the same VM
+  - `itch-consumer` uses `19100` (itch-feed, TCP)
+
+For the prod-shaped “apps on VM” mode, the Podman sidecar containers must publish those ports back onto the host:
+
+- `scripts/prod/podman-up-app.sh` publishes:
+  - upstream ports to `127.0.0.1:<port>` (so host apps can connect)
+  - sidecar inbound ports to `0.0.0.0:<port>` (so other services/mesh gateways can reach the sidecar)
+  - admin ports to `127.0.0.1:29000+` (debug only)
+
+If you change any `local_bind_port` / sidecar `port` in Consul registration, you must also update:
+
+- your app env vars (e.g. `REFDATA_BASE_URL`, `ORDERMANAGER_BASE_URL`)
+- the Podman pod port mappings (`scripts/prod/podman-up-app.sh`)
+
 ## Single-VM POC (apps on VM, mesh in containers)
 
-If you cannot run dedicated Consul server VMs yet, you can use the **single-VM** mesh-only stack on each app VM:
+If you cannot run dedicated Consul server VMs yet, you can use the **single-VM POC mesh stack** on each app VM:
 
-- `docker-compose.mesh-only.yml` (+ optional `docker-compose.mesh-only.dc1.yml`)
+- `docker-compose.poc.single-vm.yml` (+ optional `docker-compose.poc.single-vm.dc1.yml`)
 
 In this mode, the Consul process runs in **server mode** and also acts as the **local agent** that runs health checks for the VM-hosted apps.
 
+This mode also uses `${ENVOY_IMAGE}` + one-shot `*-bootstrap` containers (Consul CLI) to generate the Envoy bootstrap config.
+
 Example:
 
-- dc1 VM: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN_WAN=10.0.1.10 podman compose -f docker-compose.mesh-only.yml -f docker-compose.mesh-only.dc1.yml up -d`
-- dc2 VM: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN_WAN=10.0.0.10 podman compose -f docker-compose.mesh-only.yml up -d`
+- dc1 VM: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN_WAN=10.0.1.10 podman compose -f docker-compose.poc.single-vm.yml -f docker-compose.poc.single-vm.dc1.yml up -d`
+- dc2 VM: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN_WAN=10.0.0.10 podman compose -f docker-compose.poc.single-vm.yml up -d`
 
 ## Podman Desktop notes (Windows/macOS/Linux)
 
 - This repo includes multiple Compose files:
   - `docker-compose.yml` (everything containerised)
-  - `docker-compose.mesh-only.yml` (+ optional `docker-compose.mesh-only.dc1.yml`) for a **single-VM POC** where apps run on the VM and Consul+Envoy run in containers on the same VM.
+  - `docker-compose.poc.single-vm.yml` (+ optional `docker-compose.poc.single-vm.dc1.yml`) for a **single-VM POC** where apps run on the VM and Consul+Envoy run in containers on the same VM.
   - `docker-compose.prod.server.yml` + `docker-compose.prod.app.yml` for a **production-shaped** topology with dedicated Consul server VM(s) and separate app VM(s).
 - All Compose files in this repo avoid host networking (published ports) so they work with Podman without root privileges.
-- Podman uses the same Compose spec as Docker; these files work with `podman compose` or `podman-compose`.
+- Podman supports the Compose spec; these files work with `podman compose` or `podman-compose`.
 - Ensure Podman is running:
   - Windows/macOS typically require a VM: `podman machine start`
 - Ensure Compose is available:
-  - Preferred: `podman compose version`
-  - Alternative: install `podman-compose` and use `podman-compose version`
+  - Some Podman installs require an external compose provider. If you see `looking up compose provider failed`, install `podman-compose`.
+  - Quick check: `podman-compose version`
+- If you don’t want Compose at all, the production-shaped stacks have Podman-only wrappers:
+  - `./scripts/prod/podman-up-server.sh`, `./scripts/prod/podman-up-app.sh`
 - Podman Desktop UI: you can typically run `docker-compose.yml` from the Compose section; the scripts are just thin wrappers around the CLI.
-- If you have both Docker and Podman installed, the scripts default to Podman; force Docker with:
-  - PowerShell: `./scripts/start.ps1 -Engine docker`
-  - Bash: `CONTAINER_ENGINE=docker ./scripts/start.sh`
 
 ## Where failover is configured
 
@@ -334,7 +442,9 @@ For each VM (node) running an app:
    - `connect { sidecar_service { ... } }`
    - health checks
    - upstream local bind ports
-3. Run `consul connect envoy -sidecar-for <service-id>` as the sidecar.
+3. Run the Envoy sidecar:
+   - If Envoy is installed on the VM: `consul connect envoy -sidecar-for <service-id>`
+   - If Envoy runs in a container: generate bootstrap with `consul connect envoy -sidecar-for <service-id> -bootstrap > bootstrap.json`, then run `envoy -c bootstrap.json`
 4. Apply config entries (`service-defaults`, `service-resolver`, `service-intentions`) per environment (Ansible templates work well here).
 
 Your application config becomes simple and environment-stable:
@@ -366,4 +476,4 @@ This repo does not include F5 config, but the usual production pattern is:
 
 # Disclaimer
 
-This MVP was created with the help of Codex from OpenAPI.
+This MVP was created with the help of Codex from OpenAI.

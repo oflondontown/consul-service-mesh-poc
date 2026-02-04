@@ -1,3 +1,8 @@
+#
+# Single-VM POC mesh stack (apps run on the VM)
+# - Runs Consul server + mesh gateway + Envoy sidecars in containers on this VM.
+# - Does NOT run the application processes themselves (webservice/ordermanager/refdata/etc).
+#
 services:
   consul:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
@@ -112,16 +117,18 @@ services:
         echo "Done."
     networks: [mesh]
 
-  mesh-gateway:
+  mesh-gateway-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       HOST_IP: ${HOST_IP:-}
       ENVOY_ADMIN_BIND: 0.0.0.0:29100
+    volumes:
+      - mesh-gateway-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -134,27 +141,46 @@ services:
         echo "Waiting for local Consul..."
         for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
 
-        echo "Starting mesh gateway mesh-gateway-${CONSUL_DATACENTER}..."
-        exec consul connect envoy -gateway=mesh -register \
+        echo "Generating mesh gateway bootstrap..."
+        consul connect envoy -gateway=mesh -register \
           -service "mesh-gateway-${CONSUL_DATACENTER}" \
           -address '{{ GetInterfaceIP "eth0" }}:8443' \
           -wan-address "${HOST_IP}:8443" \
-          -admin-bind "${ENVOY_ADMIN_BIND}"
+          -admin-bind "${ENVOY_ADMIN_BIND}" \
+          -bootstrap >/bootstrap/bootstrap.json
+
+  mesh-gateway:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - mesh-gateway-bootstrap
+    restart: unless-stopped
+    volumes:
+      - mesh-gateway-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "8443:8443"
       - "127.0.0.1:29100:29100"
     networks: [mesh]
 
-  webservice-envoy:
+  webservice-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       SERVICE_ID: webservice-${CONSUL_DATACENTER}
       ENVOY_ADMIN_BIND: 0.0.0.0:29000
+    volumes:
+      - webservice-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -163,7 +189,24 @@ services:
         for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (${SERVICE_ID})..."
         for i in $(seq 1 180); do wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
-        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+        echo "Generating Envoy bootstrap for ${SERVICE_ID}..."
+        consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+
+  webservice-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - webservice-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - webservice-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "127.0.0.1:18082:18082"
       - "127.0.0.1:18083:18083"
@@ -171,16 +214,18 @@ services:
       - "127.0.0.1:29000:29000"
     networks: [mesh]
 
-  ordermanager-envoy:
+  ordermanager-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       SERVICE_ID: ordermanager-${CONSUL_DATACENTER}
       ENVOY_ADMIN_BIND: 0.0.0.0:29001
+    volumes:
+      - ordermanager-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -189,23 +234,42 @@ services:
         for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (${SERVICE_ID})..."
         for i in $(seq 1 180); do wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
-        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+        echo "Generating Envoy bootstrap for ${SERVICE_ID}..."
+        consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+
+  ordermanager-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - ordermanager-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - ordermanager-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "127.0.0.1:18182:18182"
       - "21001:21001"
       - "127.0.0.1:29001:29001"
     networks: [mesh]
 
-  refdata-envoy:
+  refdata-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       SERVICE_ID: refdata-${CONSUL_DATACENTER}
       ENVOY_ADMIN_BIND: 0.0.0.0:29002
+    volumes:
+      - refdata-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -214,22 +278,41 @@ services:
         for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (${SERVICE_ID})..."
         for i in $(seq 1 180); do wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
-        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+        echo "Generating Envoy bootstrap for ${SERVICE_ID}..."
+        consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+
+  refdata-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - refdata-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - refdata-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "21002:21002"
       - "127.0.0.1:29002:29002"
     networks: [mesh]
 
-  itch-feed-envoy:
+  itch-feed-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
     depends_on:
       - consul-config
-    restart: unless-stopped
     environment:
       CONSUL_HTTP_ADDR: http://consul:8500
+      CONSUL_GRPC_ADDR: http://consul:8502
       CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
       SERVICE_ID: itch-feed-${CONSUL_DATACENTER}
       ENVOY_ADMIN_BIND: 0.0.0.0:29003
+    volumes:
+      - itch-feed-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -238,7 +321,24 @@ services:
         for i in $(seq 1 90); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (${SERVICE_ID})..."
         for i in $(seq 1 180); do wget -qO- "http://consul:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
-        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+        echo "Generating Envoy bootstrap for ${SERVICE_ID}..."
+        consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+
+  itch-feed-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    depends_on:
+      - itch-feed-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - itch-feed-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for bootstrap..."
+        for i in $(seq 1 120); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "21003:21003"
       - "127.0.0.1:29003:29003"
@@ -246,6 +346,11 @@ services:
 
 volumes:
   consul-data:
+  mesh-gateway-bootstrap:
+  webservice-envoy-bootstrap:
+  ordermanager-envoy-bootstrap:
+  refdata-envoy-bootstrap:
+  itch-feed-envoy-bootstrap:
 
 networks:
   mesh:

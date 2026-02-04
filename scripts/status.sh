@@ -1,8 +1,6 @@
 #!/usr/bin/env sh
 set -eu
 
-NO_BUILD="${NO_BUILD:-0}"
-
 compose() {
   if ! command -v podman >/dev/null 2>&1; then
     echo "podman command not found. Install Podman or Podman Desktop." >&2
@@ -23,8 +21,4 @@ compose() {
   exit 1
 }
 
-if [ "$NO_BUILD" = "1" ]; then
-  compose up -d
-else
-  compose up -d --build
-fi
+compose ps

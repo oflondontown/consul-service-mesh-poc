@@ -43,35 +43,77 @@ services:
       retries: 30
     networks: [mesh]
 
-  mesh-gateway-dc1:
+  mesh-gateway-dc1-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:consul-dc1"
     depends_on:
       - consul-dc1
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - mesh-gateway-dc1-bootstrap:/bootstrap
     command:
       - sh
       - -ec
       - |
         echo "Waiting for local Consul server (dc1)..."
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
-        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc1" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001
+        echo "Generating mesh gateway bootstrap (dc1)..."
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc1" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
 
-  mesh-gateway-dc2:
+  mesh-gateway-dc1:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:consul-dc1"
+    depends_on:
+      - mesh-gateway-dc1-bootstrap
+    restart: unless-stopped
+    volumes:
+      - mesh-gateway-dc1-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for mesh gateway bootstrap (dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
+
+  mesh-gateway-dc2-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:consul-dc2"
     depends_on:
       - consul-dc2
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - mesh-gateway-dc2-bootstrap:/bootstrap
     command:
       - sh
       - -ec
       - |
         echo "Waiting for local Consul server (dc2)..."
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
-        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc2" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001
+        echo "Generating mesh gateway bootstrap (dc2)..."
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc2" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
+
+  mesh-gateway-dc2:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:consul-dc2"
+    depends_on:
+      - mesh-gateway-dc2-bootstrap
+    restart: unless-stopped
+    volumes:
+      - mesh-gateway-dc2-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for mesh gateway bootstrap (dc2)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   consul-config:
     image: docker.io/hashicorp/consul:1.17
@@ -191,13 +233,16 @@ services:
       - -datacenter=dc2
       - -retry-join=consul-dc2
 
-  webservice-envoy:
+  webservice-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:webservice"
     depends_on:
       - webservice-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - webservice-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -206,15 +251,35 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (webservice)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q webservice && break; sleep 1; done
-        consul connect envoy -sidecar-for webservice-dc1 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for webservice-dc1 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
 
-  webservice-secondary-envoy:
+  webservice-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:webservice"
+    depends_on:
+      - webservice-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - webservice-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (webservice dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
+
+  webservice-secondary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:webservice-secondary"
     depends_on:
       - webservice-secondary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - webservice-secondary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -223,7 +288,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (webservice)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q webservice && break; sleep 1; done
-        consul connect envoy -sidecar-for webservice-dc2 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for webservice-dc2 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  webservice-secondary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:webservice-secondary"
+    depends_on:
+      - webservice-secondary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - webservice-secondary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (webservice dc2)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   ordermanager:
     build:
@@ -295,13 +377,16 @@ services:
       - -datacenter=dc2
       - -retry-join=consul-dc2
 
-  ordermanager-envoy:
+  ordermanager-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:ordermanager"
     depends_on:
       - ordermanager-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - ordermanager-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -310,15 +395,35 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (ordermanager)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q ordermanager && break; sleep 1; done
-        consul connect envoy -sidecar-for ordermanager-dc1 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for ordermanager-dc1 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
 
-  ordermanager-secondary-envoy:
+  ordermanager-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:ordermanager"
+    depends_on:
+      - ordermanager-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - ordermanager-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (ordermanager dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
+
+  ordermanager-secondary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:ordermanager-secondary"
     depends_on:
       - ordermanager-secondary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - ordermanager-secondary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -327,7 +432,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (ordermanager)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q ordermanager && break; sleep 1; done
-        consul connect envoy -sidecar-for ordermanager-dc2 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for ordermanager-dc2 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  ordermanager-secondary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:ordermanager-secondary"
+    depends_on:
+      - ordermanager-secondary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - ordermanager-secondary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (ordermanager dc2)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   refdata-primary:
     build:
@@ -363,13 +485,16 @@ services:
       - -datacenter=dc1
       - -retry-join=consul-dc1
 
-  refdata-primary-envoy:
+  refdata-primary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:refdata-primary"
     depends_on:
       - refdata-primary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - refdata-primary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -378,7 +503,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (refdata)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q refdata && break; sleep 1; done
-        consul connect envoy -sidecar-for refdata-dc1 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for refdata-dc1 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  refdata-primary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:refdata-primary"
+    depends_on:
+      - refdata-primary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - refdata-primary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (refdata dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   refdata-secondary:
     build:
@@ -414,13 +556,16 @@ services:
       - -datacenter=dc2
       - -retry-join=consul-dc2
 
-  refdata-secondary-envoy:
+  refdata-secondary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:refdata-secondary"
     depends_on:
       - refdata-secondary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - refdata-secondary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -429,7 +574,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (refdata)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q refdata && break; sleep 1; done
-        consul connect envoy -sidecar-for refdata-dc2 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for refdata-dc2 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  refdata-secondary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:refdata-secondary"
+    depends_on:
+      - refdata-secondary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - refdata-secondary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (refdata dc2)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   itch-feed-primary:
     build:
@@ -465,13 +627,16 @@ services:
       - -datacenter=dc1
       - -retry-join=consul-dc1
 
-  itch-feed-primary-envoy:
+  itch-feed-primary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:itch-feed-primary"
     depends_on:
       - itch-feed-primary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - itch-feed-primary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -480,7 +645,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (itch-feed)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-feed && break; sleep 1; done
-        consul connect envoy -sidecar-for itch-feed-dc1 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for itch-feed-dc1 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  itch-feed-primary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:itch-feed-primary"
+    depends_on:
+      - itch-feed-primary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - itch-feed-primary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (itch-feed dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   itch-feed-secondary:
     build:
@@ -516,13 +698,16 @@ services:
       - -datacenter=dc2
       - -retry-join=consul-dc2
 
-  itch-feed-secondary-envoy:
+  itch-feed-secondary-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:itch-feed-secondary"
     depends_on:
       - itch-feed-secondary-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - itch-feed-secondary-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -531,7 +716,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (itch-feed)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-feed && break; sleep 1; done
-        consul connect envoy -sidecar-for itch-feed-dc2 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for itch-feed-dc2 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  itch-feed-secondary-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:itch-feed-secondary"
+    depends_on:
+      - itch-feed-secondary-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - itch-feed-secondary-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (itch-feed dc2)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
   itch-consumer:
     build:
@@ -569,13 +771,16 @@ services:
       - -datacenter=dc1
       - -retry-join=consul-dc1
 
-  itch-consumer-envoy:
+  itch-consumer-envoy-bootstrap:
     image: docker.io/hashicorp/consul:1.17
     network_mode: "service:itch-consumer"
     depends_on:
       - itch-consumer-consul
     environment:
       CONSUL_HTTP_ADDR: http://127.0.0.1:8500
+      CONSUL_GRPC_ADDR: http://127.0.0.1:8502
+    volumes:
+      - itch-consumer-envoy-bootstrap:/bootstrap
     command:
       - sh
       - -ec
@@ -584,7 +789,24 @@ services:
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Waiting for service registration (itch-consumer)..."
         for i in $(seq 1 60); do consul catalog services 2>/dev/null | grep -q itch-consumer && break; sleep 1; done
-        consul connect envoy -sidecar-for itch-consumer-dc1 -admin-bind 0.0.0.0:19000
+        consul connect envoy -sidecar-for itch-consumer-dc1 -admin-bind 0.0.0.0:19000 -bootstrap >/bootstrap/bootstrap.json
+
+  itch-consumer-envoy:
+    image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
+    network_mode: "service:itch-consumer"
+    depends_on:
+      - itch-consumer-envoy-bootstrap
+    restart: unless-stopped
+    volumes:
+      - itch-consumer-envoy-bootstrap:/bootstrap:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Envoy bootstrap (itch-consumer dc1)..."
+        for i in $(seq 1 60); do [ -s /bootstrap/bootstrap.json ] && break; sleep 1; done
+        test -s /bootstrap/bootstrap.json
+        exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
 
 networks:
   mesh:
@@ -592,12 +814,23 @@ networks:
 volumes:
   consul-dc1-data:
   consul-dc2-data:
+  mesh-gateway-dc1-bootstrap:
+  mesh-gateway-dc2-bootstrap:
   webservice-consul-data:
   webservice-secondary-consul-data:
+  webservice-envoy-bootstrap:
+  webservice-secondary-envoy-bootstrap:
   ordermanager-consul-data:
   ordermanager-secondary-consul-data:
+  ordermanager-envoy-bootstrap:
+  ordermanager-secondary-envoy-bootstrap:
   refdata-primary-consul-data:
   refdata-secondary-consul-data:
+  refdata-primary-envoy-bootstrap:
+  refdata-secondary-envoy-bootstrap:
   itch-feed-primary-consul-data:
   itch-feed-secondary-consul-data:
+  itch-feed-primary-envoy-bootstrap:
+  itch-feed-secondary-envoy-bootstrap:
   itch-consumer-consul-data:
+  itch-consumer-envoy-bootstrap:

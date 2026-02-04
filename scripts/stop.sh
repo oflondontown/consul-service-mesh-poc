@@ -2,41 +2,24 @@
 set -eu
 
 REMOVE_VOLUMES="${REMOVE_VOLUMES:-0}"
-CONTAINER_ENGINE="${CONTAINER_ENGINE:-auto}"
 
 compose() {
-  if [ "$CONTAINER_ENGINE" = "docker" ]; then
-    docker compose "$@"
-    return
-  fi
-
-  if [ "$CONTAINER_ENGINE" = "podman" ]; then
-    if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
-      podman compose "$@"
-      return
-    fi
-    if command -v podman-compose >/dev/null 2>&1; then
-      podman-compose "$@"
-      return
-    fi
-    echo "Podman is installed but no compose frontend found. Install podman-compose or a podman compose plugin." >&2
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "podman command not found. Install Podman or Podman Desktop." >&2
     exit 1
   fi
 
-  if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+  if podman compose version >/dev/null 2>&1; then
     podman compose "$@"
     return
   fi
+
   if command -v podman-compose >/dev/null 2>&1; then
     podman-compose "$@"
     return
   fi
-  if command -v docker >/dev/null 2>&1; then
-    docker compose "$@"
-    return
-  fi
 
-  echo "No container engine found. Install Docker or Podman, or set CONTAINER_ENGINE=docker|podman." >&2
+  echo "Podman Compose frontend not found. Install podman-compose (or a podman compose plugin)." >&2
   exit 1
 }
 
