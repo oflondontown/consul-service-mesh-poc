@@ -1,0 +1,26 @@
+services:
+  itch-consumer-envoy:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    restart: unless-stopped
+    depends_on:
+      - consul-agent
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-agent:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      SERVICE_ID: itch-consumer-${CONSUL_DATACENTER}
+      ENVOY_ADMIN_BIND: 0.0.0.0:29004
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul agent..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (${SERVICE_ID})..."
+        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      - "127.0.0.1:19100:19100"
+      - "21004:21004"
+      - "127.0.0.1:29004:29004"
+    networks: [mesh]

@@ -1,0 +1,193 @@
+services:
+  consul-agent:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    restart: unless-stopped
+    environment:
+      # Required
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      # Optional: if omitted, a unique name is derived from HOST_IP.
+      CONSUL_NODE_NAME: ${CONSUL_NODE_NAME:-}
+      HOST_IP: ${HOST_IP:-}
+
+      # Required: LAN peers (Consul servers in the same datacenter)
+      CONSUL_RETRY_JOIN: ${CONSUL_RETRY_JOIN:-}
+
+      # Optional hardening
+      CONSUL_ENCRYPT: ${CONSUL_ENCRYPT:-}
+
+      # Optional
+      CONSUL_BIND_ADDR: ${CONSUL_BIND_ADDR:-}
+      CONSUL_ADVERTISE_ADDR: ${CONSUL_ADVERTISE_ADDR:-}
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - ./docker/consul/services-vmhost/${CONSUL_DATACENTER:-dc1}:/consul/config/templates:ro
+      - consul-agent-data:/consul/data
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -z "${HOST_IP:-}" ]; then
+          echo "Missing HOST_IP (example: 10.0.0.10)" >&2
+          exit 2
+        fi
+        if [ -z "${CONSUL_RETRY_JOIN:-}" ]; then
+          echo "Missing CONSUL_RETRY_JOIN (comma-separated Consul server IPs in this DC)" >&2
+          exit 2
+        fi
+
+        echo "Rendering service definitions for HOST_IP=${HOST_IP}..."
+        mkdir -p /consul/config/rendered
+        for f in /consul/config/templates/*.json; do
+          name="$(basename "$f")"
+          sed "s/__HOST_IP__/${HOST_IP}/g" "$f" >"/consul/config/rendered/$name"
+        done
+
+        node="${CONSUL_NODE_NAME:-app-${CONSUL_DATACENTER}-$(echo "${HOST_IP}" | tr '.' '-')}"
+
+        args="agent -config-file=/consul/config/client.hcl -data-dir=/consul/data"
+        args="$args -node=${node} -datacenter=${CONSUL_DATACENTER} -client=0.0.0.0"
+        args="$args -config-dir=/consul/config/rendered"
+
+        if [ -n "${CONSUL_BIND_ADDR:-}" ]; then
+          args="$args -bind=${CONSUL_BIND_ADDR}"
+        fi
+
+        advertise="${CONSUL_ADVERTISE_ADDR:-${HOST_IP}}"
+        args="$args -advertise=${advertise}"
+
+        if [ -n "${CONSUL_ENCRYPT:-}" ]; then
+          args="$args -encrypt=${CONSUL_ENCRYPT}"
+        fi
+
+        for addr in $(echo "${CONSUL_RETRY_JOIN:-}" | tr ',' ' '); do
+          [ -n "$addr" ] && args="$args -retry-join=$addr"
+        done
+
+        echo "Starting: consul $args"
+        exec consul $args
+    ports:
+      # Local debugging only (agent HTTP/gRPC).
+      - "127.0.0.1:8500:8500"
+      - "127.0.0.1:8502:8502"
+
+      # Required so the server cluster can gossip with this node (Serf LAN).
+      - "8301:8301"
+      - "8301:8301/udp"
+    healthcheck:
+      test: ["CMD", "sh", "-ec", "wget -qO- http://127.0.0.1:8500/v1/agent/self >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [mesh]
+
+  webservice-envoy:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-agent
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-agent:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      SERVICE_ID: webservice-${CONSUL_DATACENTER}
+      ENVOY_ADMIN_BIND: 0.0.0.0:29000
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul agent..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (${SERVICE_ID})..."
+        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      # Upstreams for the VM-hosted webservice process (localhost on the VM)
+      - "127.0.0.1:18082:18082"
+      - "127.0.0.1:18083:18083"
+      # Sidecar inbound port (must be reachable by the mesh)
+      - "21000:21000"
+      # Admin (localhost)
+      - "127.0.0.1:29000:29000"
+    networks: [mesh]
+
+  ordermanager-envoy:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-agent
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-agent:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      SERVICE_ID: ordermanager-${CONSUL_DATACENTER}
+      ENVOY_ADMIN_BIND: 0.0.0.0:29001
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul agent..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (${SERVICE_ID})..."
+        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      - "127.0.0.1:18182:18182"
+      - "21001:21001"
+      - "127.0.0.1:29001:29001"
+    networks: [mesh]
+
+  refdata-envoy:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-agent
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-agent:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      SERVICE_ID: refdata-${CONSUL_DATACENTER}
+      ENVOY_ADMIN_BIND: 0.0.0.0:29002
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul agent..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (${SERVICE_ID})..."
+        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      - "21002:21002"
+      - "127.0.0.1:29002:29002"
+    networks: [mesh]
+
+  itch-feed-envoy:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-agent
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-agent:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      SERVICE_ID: itch-feed-${CONSUL_DATACENTER}
+      ENVOY_ADMIN_BIND: 0.0.0.0:29003
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul agent..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+        echo "Waiting for service registration (${SERVICE_ID})..."
+        for i in $(seq 1 240); do wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null 2>&1 && break; sleep 1; done
+        wget -qO- "http://consul-agent:8500/v1/agent/service/${SERVICE_ID}" >/dev/null
+        exec consul connect envoy -sidecar-for "${SERVICE_ID}" -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      - "21003:21003"
+      - "127.0.0.1:29003:29003"
+    networks: [mesh]
+
+volumes:
+  consul-agent-data:
+
+networks:
+  mesh:

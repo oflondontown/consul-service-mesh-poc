@@ -1,0 +1,163 @@
+services:
+  consul-server:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    restart: unless-stopped
+    environment:
+      # Required
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+      # Optional: if omitted, a unique name is derived from HOST_IP.
+      CONSUL_NODE_NAME: ${CONSUL_NODE_NAME:-}
+      HOST_IP: ${HOST_IP:-}
+
+      # Recommended for production (3 servers per DC). You can set this to 1 for a POC.
+      CONSUL_BOOTSTRAP_EXPECT: ${CONSUL_BOOTSTRAP_EXPECT:-3}
+
+      # LAN peers (other Consul servers in the same datacenter)
+      CONSUL_RETRY_JOIN: ${CONSUL_RETRY_JOIN:-}
+
+      # WAN federation peers (Consul servers in the other datacenter)
+      CONSUL_RETRY_JOIN_WAN: ${CONSUL_RETRY_JOIN_WAN:-}
+
+      # Optional hardening
+      CONSUL_ENCRYPT: ${CONSUL_ENCRYPT:-}
+
+      # Optional
+      CONSUL_BIND_ADDR: ${CONSUL_BIND_ADDR:-}
+      CONSUL_ADVERTISE_ADDR: ${CONSUL_ADVERTISE_ADDR:-}
+      CONSUL_ADVERTISE_WAN_ADDR: ${CONSUL_ADVERTISE_WAN_ADDR:-}
+      CONSUL_ENABLE_UI: ${CONSUL_ENABLE_UI:-0}
+    volumes:
+      - ./docker/consul/client.hcl:/consul/config/client.hcl:ro
+      - consul-server-data:/consul/data
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -z "${HOST_IP:-}" ]; then
+          echo "Missing HOST_IP (example: 10.0.0.10)" >&2
+          exit 2
+        fi
+
+        node="${CONSUL_NODE_NAME:-consul-server-${CONSUL_DATACENTER}-$(echo "${HOST_IP}" | tr '.' '-')}"
+
+        args="agent -config-file=/consul/config/client.hcl -data-dir=/consul/data"
+        args="$args -server -bootstrap-expect=${CONSUL_BOOTSTRAP_EXPECT}"
+        args="$args -node=${node} -datacenter=${CONSUL_DATACENTER} -client=0.0.0.0"
+
+        if [ "${CONSUL_ENABLE_UI:-0}" = "1" ]; then
+          args="$args -ui"
+        fi
+
+        if [ -n "${CONSUL_BIND_ADDR:-}" ]; then
+          args="$args -bind=${CONSUL_BIND_ADDR}"
+        fi
+
+        advertise="${CONSUL_ADVERTISE_ADDR:-${HOST_IP}}"
+        advertise_wan="${CONSUL_ADVERTISE_WAN_ADDR:-${HOST_IP}}"
+        args="$args -advertise=${advertise} -advertise-wan=${advertise_wan}"
+
+        if [ -n "${CONSUL_ENCRYPT:-}" ]; then
+          args="$args -encrypt=${CONSUL_ENCRYPT}"
+        fi
+
+        for addr in $(echo "${CONSUL_RETRY_JOIN:-}" | tr ',' ' '); do
+          [ -n "$addr" ] && args="$args -retry-join=$addr"
+        done
+        for addr in $(echo "${CONSUL_RETRY_JOIN_WAN:-}" | tr ',' ' '); do
+          [ -n "$addr" ] && args="$args -retry-join-wan=$addr"
+        done
+
+        echo "Starting: consul $args"
+        exec consul $args
+    ports:
+      # Local debugging only (avoid exposing Consul HTTP/gRPC in production unless intended).
+      - "127.0.0.1:8500:8500"
+      - "127.0.0.1:8502:8502"
+
+      # Required for LAN/WAN cluster membership (servers + clients) and WAN federation.
+      - "8300:8300"
+      - "8301:8301"
+      - "8301:8301/udp"
+      - "8302:8302"
+      - "8302:8302/udp"
+    healthcheck:
+      test: ["CMD", "sh", "-ec", "wget -qO- http://127.0.0.1:8500/v1/status/leader | grep -q '8300'"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    networks: [mesh]
+
+  consul-config:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-server
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+    volumes:
+      - ./docker/consul/config-entries:/config-entries:ro
+    command:
+      - sh
+      - -ec
+      - |
+        echo "Waiting for Consul HTTP..."
+        for i in $(seq 1 120); do
+          wget -qO- http://consul-server:8500/v1/status/leader | grep -q '8300' && break
+          sleep 1
+        done
+        wget -qO- http://consul-server:8500/v1/status/leader | grep -q '8300'
+
+        echo "Writing config entries to ${CONSUL_DATACENTER}..."
+        consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/proxy-defaults.hcl
+        consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/service-defaults.hcl
+        consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/intentions.hcl
+        consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/refdata-resolver-${CONSUL_DATACENTER}.hcl"
+        consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/ordermanager-resolver-${CONSUL_DATACENTER}.hcl"
+        consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/itch-feed-resolver-${CONSUL_DATACENTER}.hcl"
+        echo "Done."
+    networks: [mesh]
+
+  mesh-gateway:
+    image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}
+    depends_on:
+      - consul-config
+    restart: unless-stopped
+    environment:
+      CONSUL_HTTP_ADDR: http://consul-server:8500
+      CONSUL_DATACENTER: ${CONSUL_DATACENTER:-dc1}
+
+      # Required: address that other nodes in the same DC can reach.
+      MESH_GATEWAY_ADDRESS: ${MESH_GATEWAY_ADDRESS:-${HOST_IP}:8443}
+
+      # Required: address that the other DC can reach.
+      MESH_GATEWAY_WAN_ADDRESS: ${MESH_GATEWAY_WAN_ADDRESS:-${MESH_GATEWAY_ADDRESS}}
+
+      ENVOY_ADMIN_BIND: 0.0.0.0:29100
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -z "${MESH_GATEWAY_ADDRESS:-}" ]; then
+          echo "Missing MESH_GATEWAY_ADDRESS (example: 10.0.0.10:8443)" >&2
+          exit 2
+        fi
+
+        echo "Waiting for local Consul..."
+        for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
+
+        echo "Starting mesh gateway mesh-gateway-${CONSUL_DATACENTER}..."
+        exec consul connect envoy -gateway=mesh -register \
+          -service "mesh-gateway-${CONSUL_DATACENTER}" \
+          -address "${MESH_GATEWAY_ADDRESS}" \
+          -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" \
+          -admin-bind "${ENVOY_ADMIN_BIND}"
+    ports:
+      - "8443:8443"
+      - "127.0.0.1:29100:29100"
+    networks: [mesh]
+
+volumes:
+  consul-server-data:
+
+networks:
+  mesh:
