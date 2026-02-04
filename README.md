@@ -46,6 +46,7 @@ There are two common patterns for “primary + DR site”, and they behave very 
    - This can use two **fully independent** Consul clusters (one per site), because services never need to discover/reach across sites.
 
 How this relates to a DR site:
+
 - If you want **per-service failover** (e.g., `dc1 webservice` calling `dc2 refdata` during an incident), you need some form of cross-DC discovery and network reachability (WAN federation is the OSS way).
 - If your DR strategy is **site-level failover** (you fail over the whole stack + ingress to `dc2`), you may not need cross-DC discovery at all; each site can run its own Consul cluster/config and you cut over traffic via F5/DNS/GTMs.
 
@@ -76,16 +77,22 @@ How this relates to a DR site:
 - `build.gradle`, `settings.gradle`
   - Gradle multi-module build for the mock services (used by the Dockerfiles’ build stage).
 - `docs/`
-  - Project documentation, including a PlantUML architecture diagram (`docs/architecture.puml`).
+  - Project documentation, including PlantUML diagrams:
+    - `docs/architecture.puml` (current runtime architecture)
+    - `docs/deployment-option-1.puml` (topology option 1)
+    - `docs/deployment-option-2.puml` (topology option 2)
+    - `docs/deployment-option-3.puml` (topology option 3)
 
 ## Quickstart
 
 Prereqs:
+
 - A container engine with Compose support:
   - Docker Desktop / Docker Engine (`docker compose`)
   - Podman Desktop / Podman (`podman compose` or `podman-compose`)
 
 Start:
+
 - PowerShell (auto-detect engine): `./scripts/start.ps1`
 - PowerShell (force Podman): `./scripts/start.ps1 -Engine podman`
 - PowerShell (force Docker): `./scripts/start.ps1 -Engine docker`
@@ -94,23 +101,28 @@ Start:
 - Bash (force Podman): `CONTAINER_ENGINE=podman ./scripts/start.sh`
 
 UIs:
+
 - Consul dc1 UI: `http://localhost:8500`
 - Consul dc2 UI: `http://localhost:8501`
 
 Service endpoints (local dev):
+
 - `webservice` dc1: `http://localhost:8080`
 - `webservice` dc2: `http://localhost:8084`
 - `ordermanager` dc1: `http://localhost:8081`
 - `ordermanager` dc2: `http://localhost:8085`
 
 Smoke test (includes a refdata failover + restore):
+
 - PowerShell: `./scripts/smoke-test.ps1`
 
 Manual refdata failover toggle:
+
 - Disable primary (dc1): `./scripts/failover-refdata.ps1`
 - Re-enable primary (dc1): `./scripts/restore-refdata.ps1`
 
 ITCH/TCP demo:
+
 - Watch the consumer: `(docker|podman) compose logs -f itch-consumer`
 - Stop primary feed: `./scripts/failover-itch-feed.ps1`
 
@@ -148,7 +160,7 @@ Failover is **not** an app setting. It’s mesh configuration:
 
 The key idea is: **apps always call `localhost:<upstreamPort>`**, and Consul decides which datacenter/instance is healthy and routable.
 
-DR note: this repo configures failover **from `dc1` → `dc2`**. The `dc2` resolver entries do not fail back to `dc1` (to keep the DR site from “reaching back” into the primary site unexpectedly).
+DR note: this repo configures failover **from `dc1` → `dc2`**. For `refdata` and `itch-feed`, the `dc2` resolver entries are local-only (no “reach back” into `dc1`). For `ordermanager`, `dc2` is configured to **prefer `dc1` when available** (so `webservice (dc2)` can still use the primary `ordermanager`), and falls back to `dc2` when `dc1` is unavailable.
 
 ## Failover vs failback (when dc1 recovers)
 
@@ -177,7 +189,7 @@ If you want auto failover but want to avoid “bounce between dc1 and dc2”, th
 Practical implementation guidance (what is “Consul config” vs “automation”):
 
 1. **Hysteresis (recommended, mostly Consul config)**
-   - Goal: require *N consecutive failures* before marking an instance unhealthy and *M consecutive successes* before marking it healthy again.
+   - Goal: require _N consecutive failures_ before marking an instance unhealthy and _M consecutive successes_ before marking it healthy again.
    - This reduces “false failovers” and also creates an automatic “up delay” after a restart (a form of hold-down).
    - In Consul, these are configured on the **health check definition**:
      - `failures_before_critical`: number of consecutive failed check runs required before the check transitions to `critical`.
@@ -191,8 +203,8 @@ Practical implementation guidance (what is “Consul config” vs “automation�
      - `docker/consul/services/dc2/*.json`
 
 2. **Maintenance mode hold-down (operator/automation, uses Consul API)**
-   - Goal: even if the process is healthy again, keep it *intentionally* excluded from routing until you’re ready.
-   - Mechanism: put the service instance into **maintenance mode** on the *local agent* for that instance.
+   - Goal: even if the process is healthy again, keep it _intentionally_ excluded from routing until you’re ready.
+   - Mechanism: put the service instance into **maintenance mode** on the _local agent_ for that instance.
    - Typical API shape (called against the node’s local agent, often `http://127.0.0.1:8500`):
      - Enable: `PUT /v1/agent/service/maintenance/<service-id>?enable=true&reason=<text>`
      - Disable: `PUT /v1/agent/service/maintenance/<service-id>?enable=false`
@@ -243,11 +255,13 @@ For each VM (node) running an app:
 4. Apply config entries (`service-defaults`, `service-resolver`, `service-intentions`) per environment (Ansible templates work well here).
 
 Your application config becomes simple and environment-stable:
+
 - `REFDATA_BASE_URL=http://127.0.0.1:18082`
 
 ## Next iteration decisions
 
 Already decided for this POC direction:
+
 - Failover can be **automatic**, but you want to **avoid flapping** (use a stable health signal and a hold-down / controlled failback approach).
 - ITCH is **Parity Trading Nassau (SoupBinTCP)**: client sends **login + subscription**, then receives publisher data.
 - You want **cross-datacenter east–west failover** (services in `dc1` can fail over their upstreams to `dc2` when needed). This repo demonstrates that model via Consul WAN federation + `service-resolver` failover.
@@ -255,6 +269,7 @@ Already decided for this POC direction:
 - F5 will health-check `webservice` in **dc1 and dc2** and **automatically fail over to dc2** when needed.
 
 Still to decide:
+
 - Do you want the F5 setup to be **active/standby** only, or **active/active** (serve both sites) with geo/latency rules?
 
 ### F5 integration notes (guidance)
@@ -265,3 +280,7 @@ This repo does not include F5 config, but the usual production pattern is:
 - Health monitor → `GET /actuator/health` on `webservice`
 - With cross-site failover enabled, expect long-lived connections (WebSockets, SoupBinTCP) to drop during a site switch and reconnect (which is typically acceptable/expected).
 - To reduce “flap” at the edge, configure sensible monitor intervals/timeouts and an “up delay”/hold-down (vendor naming varies).
+
+# Disclaimer
+
+This MVP was created with the help of Codex from OpenAPI.

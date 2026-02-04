@@ -21,7 +21,7 @@
           "upstreams": [
             {
               "destination_name": "itch-feed",
-              "local_bind_port": 19000
+              "local_bind_port": 19100
             }
           ]
         }

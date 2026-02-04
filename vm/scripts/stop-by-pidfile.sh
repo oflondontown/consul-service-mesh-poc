@@ -26,3 +26,19 @@ fi
 
 echo "Stopping pid=$pid..." >&2
 kill "$pid"
+
+timeout_seconds="${STOP_TIMEOUT_SECONDS:-30}"
+deadline=$((SECONDS + timeout_seconds))
+while [ $SECONDS -lt $deadline ]; do
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PID_FILE"
+    echo "Stopped (pid=$pid). Removed pidfile: $PID_FILE" >&2
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "Process did not stop within ${timeout_seconds}s (pid=$pid). Sending SIGKILL..." >&2
+kill -9 "$pid" 2>/dev/null || true
+rm -f "$PID_FILE"
+echo "Stopped (SIGKILL). Removed pidfile: $PID_FILE" >&2

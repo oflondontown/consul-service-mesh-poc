@@ -1,0 +1,44 @@
+@startuml
+title Option 2 (Compromise): Consul servers (x3) with mesh gateways co-located on server VMs
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+package "dc1" as dc1 {
+  node "Consul server VM #1\n(consul agent -server)\n+ mesh gateway" as dc1_s1
+  node "Consul server VM #2\n(consul agent -server)\n+ mesh gateway" as dc1_s2
+  node "Consul server VM #3\n(consul agent -server)" as dc1_s3
+
+  node "App VM\n(apps + local Consul agent\n+ Envoy sidecars)" as dc1_app
+}
+
+package "dc2" as dc2 {
+  node "Consul server VM #1\n(consul agent -server)\n+ mesh gateway" as dc2_s1
+  node "Consul server VM #2\n(consul agent -server)\n+ mesh gateway" as dc2_s2
+  node "Consul server VM #3\n(consul agent -server)" as dc2_s3
+
+  node "App VM\n(apps + local Consul agent\n+ Envoy sidecars)" as dc2_app
+}
+
+dc1_s1 <--> dc1_s2 : Raft + LAN gossip
+dc1_s2 <--> dc1_s3 : Raft + LAN gossip
+dc2_s1 <--> dc2_s2 : Raft + LAN gossip
+dc2_s2 <--> dc2_s3 : Raft + LAN gossip
+
+dc1_s1 <--> dc2_s1 : WAN federation
+dc1_s2 <--> dc2_s2 : WAN federation
+dc1_s3 <--> dc2_s3 : WAN federation
+
+dc1_s1 <--> dc2_s1 : mesh gateway mTLS\n:8443
+dc1_s2 <--> dc2_s2 : mesh gateway mTLS\n:8443
+
+dc1_app --> dc1_s1 : cross-DC via local gateways
+dc1_app --> dc1_s2 : (HA) can use either gateway-enabled server
+dc2_app --> dc2_s1 : cross-DC via local gateways
+dc2_app --> dc2_s2 : (HA) can use either gateway-enabled server
+
+note bottom
+Scale-out is optional.\nThis diagram shows 1 app VM per DC for a minimal footprint.
+end note
+
+@enduml

@@ -1,0 +1,42 @@
+@startuml
+title Option 1 (Recommended): Dedicated Consul servers + dedicated mesh gateways + app VMs
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+package "dc1" as dc1 {
+  node "Consul server VM #1\n(consul agent -server)" as dc1_s1
+  node "Consul server VM #2\n(consul agent -server)" as dc1_s2
+  node "Consul server VM #3\n(consul agent -server)" as dc1_s3
+
+  node "Mesh gateway VM #1\n(mesh gateway + local Consul agent)" as dc1_gw1
+  node "Mesh gateway VM #2\n(mesh gateway + local Consul agent)" as dc1_gw2
+
+  node "App VM\n(apps + local Consul agent\n+ Envoy sidecars)" as dc1_app
+}
+
+package "dc2" as dc2 {
+  node "Consul server VM #1\n(consul agent -server)" as dc2_s1
+  node "Consul server VM #2\n(consul agent -server)" as dc2_s2
+  node "Consul server VM #3\n(consul agent -server)" as dc2_s3
+
+  node "Mesh gateway VM #1\n(mesh gateway + local Consul agent)" as dc2_gw1
+  node "Mesh gateway VM #2\n(mesh gateway + local Consul agent)" as dc2_gw2
+
+  node "App VM\n(apps + local Consul agent\n+ Envoy sidecars)" as dc2_app
+}
+
+dc1_s1 <--> dc2_s1 : WAN federation\n(catalog + cross-DC discovery)
+dc1_gw1 <--> dc2_gw1 : mesh gateway mTLS\n:8443
+dc1_gw2 <--> dc2_gw2 : mesh gateway mTLS\n:8443
+
+dc1_app --> dc1_gw1 : cross-DC traffic exits via gateway\n(MeshGateway.Mode=local)
+dc1_app --> dc1_gw2 : (HA) can use either local gateway
+dc2_app --> dc2_gw1 : cross-DC traffic exits via gateway\n(MeshGateway.Mode=local)
+dc2_app --> dc2_gw2 : (HA) can use either local gateway
+
+note bottom
+Scale-out is optional.\nThis diagram shows 1 app VM per DC for a minimal footprint.
+end note
+
+@enduml

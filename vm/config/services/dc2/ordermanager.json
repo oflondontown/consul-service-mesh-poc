@@ -19,7 +19,7 @@
       "sidecar_service": {
         "proxy": {
           "upstreams": [
-            { "destination_name": "refdata", "local_bind_port": 18082 }
+            { "destination_name": "refdata", "local_bind_port": 18182 }
           ]
         }
       }

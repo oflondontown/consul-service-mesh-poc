@@ -1,0 +1,16 @@
+@startuml
+title Deployment topology options (index)
+
+skinparam shadowing false
+
+note as n
+This repo now keeps each deployment option in a separate PlantUML file:
+
+- docs/deployment-option-1.puml
+- docs/deployment-option-2.puml
+- docs/deployment-option-3.puml
+
+(This file is an index to reduce confusion with multiple @startuml blocks.)
+end note
+
+@enduml

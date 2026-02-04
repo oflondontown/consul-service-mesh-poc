@@ -1,0 +1,23 @@
+@startuml
+title Option 3 (Small footprint / PoC): One VM per DC runs everything
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+package "dc1" as dc1 {
+  node "dc1 VM\nConsul server (single)\n+ mesh gateway\n+ apps\n+ Envoy sidecars" as dc1_all
+}
+
+package "dc2" as dc2 {
+  node "dc2 VM\nConsul server (single)\n+ mesh gateway\n+ apps\n+ Envoy sidecars" as dc2_all
+}
+
+dc1_all <--> dc2_all : WAN federation
+dc1_all <--> dc2_all : mesh gateway mTLS\n:8443
+
+note bottom
+Works for PoC.\nEach DC control-plane is a SPOF (1 Consul server).\nResource contention is more likely.
+end note
+
+@enduml
+
