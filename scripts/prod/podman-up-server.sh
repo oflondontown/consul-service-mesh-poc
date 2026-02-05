@@ -156,11 +156,13 @@ podman run --rm --pod "${POD}" \
   -e MESH_GATEWAY_WAN_ADDRESS="${MESH_GATEWAY_WAN_ADDRESS}" \
   -e EXPOSE_SERVERS="${EXPOSE_SERVERS}" \
   -v "${GW_BOOTSTRAP_VOL}:/bootstrap" \
-  "${CONSUL_IMAGE}" sh -ec "
-    args=(connect envoy -gateway=mesh -register -service \"mesh-gateway\" -address \"${MESH_GATEWAY_ADDRESS}\" -wan-address \"${MESH_GATEWAY_WAN_ADDRESS}\" -admin-bind \"0.0.0.0:29100\" -bootstrap)
-    if [ \"${EXPOSE_SERVERS}\" = \"1\" ]; then args+=( -expose-servers ); fi
-    consul \"\${args[@]}\" >/bootstrap/bootstrap.json
-  "
+  "${CONSUL_IMAGE}" sh -ec '
+    if [ "${EXPOSE_SERVERS:-0}" = "1" ]; then
+      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap -expose-servers >/bootstrap/bootstrap.json
+    else
+      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+    fi
+  '
 
 ensure_container "${GW_CONTAINER}" \
   --pod "${POD}" \
