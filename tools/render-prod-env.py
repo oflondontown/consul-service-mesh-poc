@@ -67,6 +67,7 @@ def main() -> int:
 
     consul_servers = set(inv.get("consul_servers", {}).get("hosts", []))
     app_hosts = set(inv.get("app_hosts", {}).get("hosts", []))
+    common_config_entries_dir = out_root / "common" / "config-entries"
 
     for host, hv in hostvars.items():
         dc = get_var(hv, "dc")
@@ -95,11 +96,13 @@ def main() -> int:
                 f"ENVOY_IMAGE={common['ENVOY_IMAGE']}",
                 f"ENVOY_EXTRA_ARGS={get_var(hv, 'envoy_extra_args', '')}",
                 f"MGMT_BIND_ADDR={common['MGMT_BIND_ADDR']}",
+                f"CONSUL_CONFIG_ENTRIES_DIR={common_config_entries_dir.as_posix()}",
             ]
             write_env(env_path, lines)
 
         if host in app_hosts:
             env_path = out_root / host / "app.env"
+            templates_dir = (out_root / host / "services").as_posix()
             lines = [
                 f"CONSUL_DATACENTER={dc}",
                 f"HOST_IP={host_ip}",
@@ -109,6 +112,7 @@ def main() -> int:
                 f"ENVOY_EXTRA_ARGS={get_var(hv, 'envoy_extra_args', '')}",
                 f"ENABLED_SERVICES={common['ENABLED_SERVICES']}",
                 f"ENABLE_ITCH_CONSUMER={common['ENABLE_ITCH_CONSUMER']}",
+                f"CONSUL_SERVICE_TEMPLATES_DIR={templates_dir}",
             ]
             write_env(env_path, lines)
 

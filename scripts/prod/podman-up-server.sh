@@ -56,6 +56,12 @@ require_env HOST_IP
 DC="${CONSUL_DATACENTER}"
 HOST_IP="${HOST_IP}"
 
+CONFIG_ENTRIES_DIR="${CONSUL_CONFIG_ENTRIES_DIR:-${REPO_ROOT}/docker/consul/config-entries}"
+if [[ -n "${CONSUL_CONFIG_ENTRIES_DIR:-}" && ! "${CONFIG_ENTRIES_DIR}" =~ ^[A-Za-z]:[\\/]|^/ ]]; then
+  CONFIG_ENTRIES_DIR="${REPO_ROOT}/${CONFIG_ENTRIES_DIR}"
+fi
+[[ -d "${CONFIG_ENTRIES_DIR}" ]] || die "Missing config entries directory: ${CONFIG_ENTRIES_DIR}"
+
 POD="mesh-server-${DC}"
 CONSUL_CONTAINER="consul-server-${DC}"
 GW_CONTAINER="mesh-gateway-${DC}"
@@ -128,7 +134,7 @@ wait_for_consul_leader "${CONSUL_CONTAINER}" 180
 log "Applying Consul config entries for ${DC}..."
 podman run --rm --pod "${POD}" \
   -e CONSUL_HTTP_ADDR="http://127.0.0.1:8500" \
-  -v "${REPO_ROOT}/docker/consul/config-entries:/config-entries:ro" \
+  -v "${CONFIG_ENTRIES_DIR}:/config-entries:ro" \
   "${CONSUL_IMAGE}" sh -ec "
     consul config write -datacenter='${DC}' /config-entries/proxy-defaults.hcl
     for f in /config-entries/service-defaults-*.hcl; do
@@ -137,9 +143,9 @@ podman run --rm --pod "${POD}" \
     for f in /config-entries/intentions-*.hcl; do
       consul config write -datacenter='${DC}' \"\$f\"
     done
-    consul config write -datacenter='${DC}' \"/config-entries/refdata-resolver-${DC}.hcl\"
-    consul config write -datacenter='${DC}' \"/config-entries/ordermanager-resolver-${DC}.hcl\"
-    consul config write -datacenter='${DC}' \"/config-entries/itch-feed-resolver-${DC}.hcl\"
+    for f in /config-entries/*-resolver-${DC}.hcl; do
+      consul config write -datacenter='${DC}' \"\$f\"
+    done
   "
 
 MESH_GATEWAY_ADDRESS="${MESH_GATEWAY_ADDRESS:-${HOST_IP}:8443}"

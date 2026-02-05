@@ -102,3 +102,31 @@ Stop containers:
 - dc2 app VM: `./scripts/prod/podman-down-app.sh --env-file quickstart/env/prod/app.dc2.env`
 - dc1 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc1.env`
 - dc2 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc2.env`
+
+## Option C: production-shaped, but with 1 bundle JSON per host (recommended for maintainability)
+
+This option keeps the runtime interface very small:
+
+- Maintain one inventory-style YAML (example: `config/mesh.example.yml`)
+- Render one **bundle JSON per host** at deploy time
+- Start/stop using `meshctl-*` wrappers (no per-service `*.hcl`/`*.json` to maintain by hand)
+
+### Render bundles (deploy/control machine)
+
+```bash
+ansible-inventory --version
+ansible-inventory -i config/mesh.example.yml --list > inventory.json
+python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
+```
+
+Copy `run/mesh/bundles/<host>.bundle.json` to each target host (or deploy the repo with that folder included).
+
+### Start/stop (on each host)
+
+- Server VM: `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- App VM: `./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+
+Stop:
+
+- Server VM: `./scripts/prod/meshctl-down-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- App VM: `./scripts/prod/meshctl-down-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`

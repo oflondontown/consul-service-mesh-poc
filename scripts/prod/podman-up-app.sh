@@ -9,6 +9,17 @@ source "${SCRIPT_DIR}/lib-podman.sh"
 
 require_cmd podman
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    die "Missing python (need python3 or python)"
+  fi
+fi
+
 usage() {
   cat <<EOF
 Usage: $0 [--env-file <path>]
@@ -60,7 +71,10 @@ ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER:-0}"
 ENVOY_ADMIN_PORT_OFFSET="${ENVOY_ADMIN_PORT_OFFSET:-8000}"
 ENABLED_SERVICES="${ENABLED_SERVICES:-}"
 
-TEMPLATE_DIR="${REPO_ROOT}/docker/consul/services-vmhost/${DC}"
+TEMPLATE_DIR="${CONSUL_SERVICE_TEMPLATES_DIR:-${REPO_ROOT}/docker/consul/services-vmhost/${DC}}"
+if [[ -n "${CONSUL_SERVICE_TEMPLATES_DIR:-}" && ! "${TEMPLATE_DIR}" =~ ^[A-Za-z]:[\\/]|^/ ]]; then
+  TEMPLATE_DIR="${REPO_ROOT}/${TEMPLATE_DIR}"
+fi
 [[ -d "${TEMPLATE_DIR}" ]] || die "Missing service template directory: ${TEMPLATE_DIR}"
 
 POD="mesh-app-${DC}"
@@ -70,28 +84,34 @@ AGENT_DATA_VOL="consul-agent-data-${DC}"
 
 ensure_volume "${AGENT_DATA_VOL}"
 
-json_string_field() {
-  local field="$1"
-  local file="$2"
-  sed -nE "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p" "${file}" | head -n 1
-}
-
-json_sidecar_port() {
+template_info_tsv() {
   local file="$1"
-  awk '
-    BEGIN { in_sidecar = 0 }
-    /"sidecar_service"[[:space:]]*:/ { in_sidecar = 1; next }
-    in_sidecar && /"port"[[:space:]]*:/ {
-      gsub(/[^0-9]/, "", $0);
-      print $0;
-      exit
-    }
-  ' "${file}"
-}
+  "${PYTHON_BIN}" - "$file" <<'PY'
+import json
+import sys
 
-json_upstream_ports() {
-  local file="$1"
-  sed -nE 's/.*"local_bind_port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "${file}"
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+service = data.get("service", data)
+name = service.get("name", "")
+service_id = service.get("id", "")
+connect = service.get("connect", {}) or {}
+sidecar = connect.get("sidecar_service", {}) or {}
+sidecar_port = sidecar.get("port", "")
+proxy = sidecar.get("proxy", {}) or {}
+upstreams = proxy.get("upstreams", []) or []
+up_ports = []
+for u in upstreams:
+    try:
+        up_ports.append(str(int(u.get("local_bind_port"))))
+    except Exception:
+        pass
+
+# tab-separated: name, id, sidecar_port, upstream_ports_csv
+print(f"{name}\t{service_id}\t{sidecar_port}\t{','.join(up_ports)}")
+PY
 }
 
 declare -A port_seen=()
@@ -123,8 +143,7 @@ fi
 
 shopt -s nullglob
 for f in "${TEMPLATE_DIR}"/*.json; do
-  service_name="$(json_string_field name "${f}")"
-  service_id="$(json_string_field id "${f}")"
+  IFS=$'\t' read -r service_name service_id sidecar_port upstream_ports_csv < <(template_info_tsv "${f}")
 
   if [[ -z "${service_name}" || -z "${service_id}" ]]; then
     die "Failed to parse service name/id from: ${f}"
@@ -138,11 +157,10 @@ for f in "${TEMPLATE_DIR}"/*.json; do
     continue
   fi
 
-  if ! grep -q '"sidecar_service"' "${f}"; then
+  if [[ -z "${sidecar_port}" ]]; then
     continue
   fi
 
-  sidecar_port="$(json_sidecar_port "${f}")"
   [[ -n "${sidecar_port}" ]] || die "Failed to parse sidecar_service.port from: ${f}"
 
   admin_port="$((sidecar_port + ENVOY_ADMIN_PORT_OFFSET))"
@@ -154,10 +172,13 @@ for f in "${TEMPLATE_DIR}"/*.json; do
   add_pod_port "${sidecar_port}:${sidecar_port}/tcp"
   add_pod_port "127.0.0.1:${admin_port}:${admin_port}/tcp"
 
-  while IFS= read -r up_port; do
-    [[ -n "${up_port}" ]] || continue
-    add_pod_port "127.0.0.1:${up_port}:${up_port}/tcp"
-  done < <(json_upstream_ports "${f}")
+  if [[ -n "${upstream_ports_csv}" ]]; then
+    IFS=',' read -r -a up_ports <<<"${upstream_ports_csv}"
+    for up_port in "${up_ports[@]}"; do
+      [[ -n "${up_port}" ]] || continue
+      add_pod_port "127.0.0.1:${up_port}:${up_port}/tcp"
+    done
+  fi
 done
 shopt -u nullglob
 
@@ -178,7 +199,7 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
   -e ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER}" \
   -e ENABLED_SERVICES="${ENABLED_SERVICES}" \
   -v "${REPO_ROOT}/docker/consul/client.hcl:/consul/config/client.hcl:ro" \
-  -v "${REPO_ROOT}/docker/consul/services-vmhost/${DC}:/consul/config/templates:ro" \
+  -v "${TEMPLATE_DIR}:/consul/config/templates:ro" \
   -v "${AGENT_DATA_VOL}:/consul/data" \
   "${CONSUL_IMAGE}" sh -ec "
     mkdir -p /consul/config/rendered

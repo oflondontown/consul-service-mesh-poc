@@ -1,0 +1,227 @@
+import org.gradle.api.tasks.bundling.Compression
+
+plugins {
+  id 'java'
+  id 'org.springframework.boot' version '3.2.0'
+  id 'io.spring.dependency-management' version '1.1.4'
+  id 'maven-publish'
+  id 'net.researchgate.release' version '3.1.0'
+}
+
+group = 'com.mycompany' // TODO change
+
+java {
+  toolchain {
+    languageVersion = JavaLanguageVersion.of(17)
+  }
+}
+
+def env = { String k -> providers.environmentVariable(k).orNull }
+
+/**
+ * ---------------- Hybrid versioning ----------------
+ *
+ * - Normal CI/feature builds: version computed from GitLab env vars (tag/branch/pipeline/timestamp)
+ * - Release builds: DO NOT override version here.
+ *   The release plugin updates gradle.properties and sets version for the release + tag.
+ *
+ * Release mode is enabled when:
+ *  - running the "release" task, OR
+ *  - -PreleaseMode=true is provided (useful for CI release jobs)
+ */
+def releaseMode = (findProperty('releaseMode')?.toString()?.toBoolean() ?: false) ||
+  gradle.startParameter.taskNames.any { it == 'release' || it.endsWith(':release') }
+
+if (!releaseMode) {
+  // Your snapshot logic:
+  // 1) if CI_COMMIT_TAG exists -> use it
+  // 2) else if CI_COMMIT_BRANCH exists -> last path segment + pipelineId + -SNAPSHOT
+  // 3) else -> timestamp
+  def tag = env('CI_COMMIT_TAG')
+  def branchRaw = env('CI_COMMIT_BRANCH') ?: env('CI_COMMIT_REF_NAME')
+  def branchSuffix = branchRaw ? branchRaw.tokenize('/').last() : null
+  def pipelineId = env('CI_PIPELINE_ID') ?: env('PIPELINE_ID')
+  def timestampVersion = new Date().format("yyyyMMddHHmmss")
+
+  if (tag) {
+    version = tag
+  } else if (branchSuffix) {
+    def pid = pipelineId ?: "0"
+    version = "${branchSuffix}-${pid}-SNAPSHOT"
+  } else {
+    version = timestampVersion
+  }
+}
+
+// helpful in CI logs
+tasks.register('printVersion') {
+  doLast { println "Project version = ${project.version} (releaseMode=${releaseMode})" }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'org.springframework.boot:spring-boot-starter'
+  testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.withType(Test).configureEach {
+  useJUnitPlatform()
+}
+
+/**
+ * ---------------- Thin jar packaging ----------------
+ * We want lib/<app>.jar + lib/<deps>.jar, not a Spring Boot fat jar.
+ */
+tasks.named('bootJar') { enabled = false }
+
+tasks.named('jar') {
+  enabled = true
+  archiveBaseName.set(project.name)
+  archiveVersion.set(project.version.toString())
+
+  // Exclude externalized config files from the app jar
+  exclude('**/application*.yml', '**/application*.yaml', '**/logback*.xml')
+}
+
+/**
+ * ---------------- Datamodel jar (subset of classes) ----------------
+ * Publishes separately with classifier "datamodel".
+ *
+ * TODO: adjust include patterns to match your project.
+ */
+tasks.register('datamodelJar', Jar) {
+  group = 'build'
+  description = 'Jar containing only the datamodel subset of application classes.'
+  dependsOn tasks.named('classes')
+
+  archiveBaseName.set(project.name)
+  archiveVersion.set(project.version.toString())
+  archiveClassifier.set('datamodel')
+
+  from(sourceSets.main.output) {
+    include(
+      'com/mycompany/**/datamodel/**',
+      'com/mycompany/**/dto/**',
+      'com/mycompany/**/model/**'
+    )
+  }
+}
+
+/**
+ * ---------------- Linux distribution (tar.gz) ----------------
+ * Layout:
+ *   resources/  ONLY application*.yml|yaml + logback*.xml
+ *   bin/        src/main/bin
+ *   scripts/    src/main/scripts (0755)
+ *   lib/        main app jar + runtime deps (datamodel jar excluded)
+ */
+def tarDistribution = tasks.register('tarDistribution', Tar) {
+  group = 'distribution'
+  description = 'Creates Linux distribution tar.gz with external config in resources/.'
+  dependsOn tasks.named('jar'), tasks.named('processResources')
+
+  archiveBaseName.set(project.name)
+  archiveVersion.set(project.version.toString())
+  compression = Compression.GZIP
+  // no classifier => <name>-<version>.tar.gz
+
+  // Only config files land here
+  into('resources') {
+    from('src/main/resources') {
+      include('**/application*.yml', '**/application*.yaml', '**/logback*.xml')
+    }
+  }
+
+  into('bin') { from('src/main/bin') }
+
+  into('scripts') {
+    from('src/main/scripts')
+    fileMode = 0755
+  }
+
+  // Only the main app jar, explicitly (prevents accidental inclusion of datamodelJar)
+  into('lib') {
+    from(tasks.named('jar').flatMap { it.archiveFile })
+  }
+
+  // Runtime dependencies only
+  into('lib') {
+    from(configurations.runtimeClasspath)
+  }
+}
+
+// Optional: make `build` produce the distribution too
+tasks.named('build') { dependsOn(tarDistribution) }
+
+/**
+ * ---------------- Publishing ----------------
+ * Publishes:
+ *  - groupId:artifactId:version:tar.gz (distribution, no classifier)
+ *  - groupId:artifactId:version:jar:datamodel (secondary artifact)
+ */
+publishing {
+  publications {
+    create('appDist', MavenPublication) {
+      groupId = project.group.toString()
+      artifactId = project.name
+      version = project.version.toString()
+
+      artifact(tarDistribution) {
+        extension = 'tar.gz'
+      }
+
+      artifact(tasks.named('datamodelJar')) {
+        classifier = 'datamodel'
+        extension = 'jar'
+      }
+
+      pom {
+        name = project.name
+        description = "Distribution + datamodel artifacts for ${project.name}"
+      }
+    }
+  }
+
+  repositories {
+    maven {
+      // TODO: replace with your Nexus URLs
+      def releasesRepoUrl  = uri('https://nexus.example.com/repository/maven-releases/')
+      def snapshotsRepoUrl = uri('https://nexus.example.com/repository/maven-snapshots/')
+
+      url = (project.version.toString().endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl)
+
+      credentials {
+        username = env('NEXUS_USERNAME') ?: (findProperty('nexusUsername') as String)
+        password = env('NEXUS_PASSWORD') ?: (findProperty('nexusPassword') as String)
+      }
+    }
+  }
+}
+
+/**
+ * ---------------- net.researchgate.release configuration ----------------
+ * Goal:
+ * - Releases only from main or release* branches (protected enforcement should be done in GitLab CI)
+ * - Tag name == version (STOS.<year>.<n>) via tagTemplate '$version'
+ * - Version stored/updated in gradle.properties (you already do this)
+ */
+release {
+  tagTemplate = '$version'
+
+  versionPropertyFile = 'gradle.properties'
+  versionProperties = ['version']
+
+  git {
+    // Allow releases from main OR branches starting with "release"
+    // (regex form supported by the plugin)
+    requireBranch.set('/^main$|^release.*$/')
+  }
+}
+
+// When running ./gradlew release, publish after the release build
+tasks.named('afterReleaseBuild') {
+  dependsOn 'publish'
+}

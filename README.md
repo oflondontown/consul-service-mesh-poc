@@ -2,6 +2,8 @@
 
 This repo is a runnable POC that demonstrates **automatic primary → secondary failover** for service-to-service calls using **Consul service mesh (Connect) + Envoy sidecars**, without pushing failover state into each application.
 
+If you’re new to this repo, start with `GETTING_STARTED.md` and `docs/what-to-use.md`.
+
 ## What it demonstrates
 
 - `webservice` (Spring Boot) and `ordermanager` (Spring Boot) call `refdata` through a local sidecar upstream (`http://127.0.0.1:18082`).
@@ -9,7 +11,19 @@ This repo is a runnable POC that demonstrates **automatic primary → secondary 
 - When **dc1 `refdata` becomes unhealthy**, Consul’s `service-resolver` failover routes traffic to **dc2 `refdata`** automatically.
 - A TCP example (`itch-feed` + `itch-consumer`) shows the same pattern works for **non-HTTP (TCP)** traffic.
 
-## Architecture (Compose)
+## Supported run modes (pick one)
+
+1) **Laptop demo (everything containerised)**
+   - Fastest way to see failover on one machine.
+   - Uses the Compose files (`docker-compose*.yml`).
+   - Guide: `quickstart/README.md` (Option A)
+
+2) **Production-shaped VMs (apps on host, mesh in containers)**
+   - Closest match to the target topology (legacy processes on VMs).
+   - Recommended variant: **one bundle JSON per host** (single runtime input).
+   - Guide: `quickstart/README.md` (Option C)
+
+## Architecture (high level)
 
 - Two Consul datacenters: `dc1` and `dc2` (WAN federated).
 - A mesh gateway runs in each datacenter (data-plane hop for cross-DC traffic, port `:8443`).
@@ -60,17 +74,18 @@ How this relates to a DR site:
   - `services/itch-feed/` – vanilla Java TCP server that emits a line every second (stands in for ITCH over TCP / SoupBinTCP).
   - `services/itch-consumer/` – vanilla Java client that connects to the feed via a local sidecar upstream (reconnect loop).
 - `docker/`
-  - Consul/mesh **runtime configuration** mounted into containers by `docker-compose.yml`.
-  - `docker/consul/server-*.hcl` – Consul server configs for `dc1` and `dc2` (Connect enabled, UI enabled, WAN join).
-  - `docker/consul/client.hcl` – Consul client config used by per-service local agents.
-  - `docker/consul/services/dc1/*.json` and `docker/consul/services/dc2/*.json` – service registrations + health checks + Connect sidecar upstream listeners (the `local_bind_port` values).
-  - `docker/consul/services-vmhost/dc1/*.json` and `docker/consul/services-vmhost/dc2/*.json` – service registration templates for apps running on the VM while Consul/Envoy run in containers (uses `HOST_IP` substitution).
-  - `docker/consul/config-entries/*.hcl` – central Consul config entries:
+  - Consul/mesh configuration and examples used by the demo stacks.
+  - `docker/consul/client.hcl` – baseline Consul config used by server/agent containers (Connect enabled).
+  - `docker/consul/server-*.hcl` – Consul server configs for the Compose-based demos.
+  - `docker/consul/services/**` and `docker/consul/services-vmhost/**` – service registration templates (reference; bundle-per-host generates equivalents at runtime).
+  - `docker/consul/config-entries/*.hcl` – central Consul config entries (reference; bundle-per-host generates equivalents at runtime):
     - `service-defaults` (protocol http/tcp)
     - `service-intentions` (allowed callers)
     - `service-resolver` (cross-datacenter failover rules)
 - `scripts/`
   - Convenience wrappers for starting/stopping the stack and running a simple failover demo (Podman).
+- `config/`
+  - Inventory-style configuration for the bundle-per-host approach (recommended for production-shaped VMs).
 - `docker-compose.yml`
   - Defines the two Consul datacenters, the mock services, and sidecars; mounts `docker/` configs into the appropriate containers.
 - `docker-compose.poc.single-vm.yml`
@@ -96,9 +111,16 @@ How this relates to a DR site:
 
 Prereqs:
 
-- For the **all-in-one container demo** (`docker-compose.yml`): Podman with a Compose frontend:
-  - `podman compose` (plugin) or `podman-compose`
-- For the **prod-shaped demo** (apps as host processes, mesh in containers): Podman only (no Compose provider required) using `scripts/prod/*`.
+- Podman (rootless supported). For “future proof” behavior, Podman 4.9+ is a good baseline.
+- Python 3 (`python3` on Linux; often `python` on Windows).
+- Java 17 (only required if you want to run the mock apps).
+- Network access to pull container images (or pre-pulled images mirrored internally).
+- Optional (laptop demo only): a Compose frontend (`podman compose` plugin or `podman-compose`).
+
+Starting points:
+
+- `GETTING_STARTED.md` for the recommended paths.
+- `quickstart/README.md` for copy/paste commands.
 
 Start:
 
@@ -168,7 +190,59 @@ Note: the official `hashicorp/consul` image does **not** include an `envoy` bina
 
 ### Ansible (optional)
 
-If you deploy with Ansible, you can define target hosts and service lists in a YAML inventory and render `scripts/prod/*.env`-compatible env files automatically. See `ansible/README.md`.
+If you deploy with Ansible, you can define target hosts **and** per-service settings (name/ports/health checks/upstreams) in a YAML inventory, then render:
+
+- `scripts/prod/*.env`-compatible env files
+- per-host Consul service registration templates
+- common Consul config entries (service-defaults, intentions, service-resolvers)
+
+See `ansible/README.md`.
+
+## Option 2: single bundle per host (inventory as source of truth)
+
+If you want to avoid maintaining many `*.hcl`/`*.json` files, you can generate a **single runtime bundle JSON per host** at deploy time, and then start/stop using that bundle.
+
+### What you maintain
+
+- One inventory-style YAML file (copy `config/mesh.example.yml` to `config/mesh.yml` and edit)
+
+### What gets generated (deploy time)
+
+- `run/mesh/bundles/<host>.bundle.json` (one per host; this is the **only runtime input**)
+
+### How it runs (runtime)
+
+- `tools/meshctl.py` expands the bundle into `run/mesh/expanded/<host>/<role>/` and then calls the existing Podman wrappers:
+  - `scripts/prod/podman-up-server.sh` / `scripts/prod/podman-down-server.sh`
+  - `scripts/prod/podman-up-app.sh` / `scripts/prod/podman-down-app.sh`
+
+### Render bundles
+
+On your deployment/control machine:
+
+```bash
+ansible-inventory -i config/mesh.example.yml --list > inventory.json
+python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
+```
+
+Notes:
+
+- `ansible-inventory` is only needed at **deploy time** to turn inventory YAML into JSON. It is **not** needed at runtime.
+- At runtime you only need: Podman + Python 3 + access to pull the Consul/Envoy images.
+
+### Start/stop (Autosys / manual)
+
+On each host (server or app VM), run the command appropriate to that host’s role:
+
+- Server VM: `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- App VM: `./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+
+Stop:
+
+- Server VM: `./scripts/prod/meshctl-down-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- App VM: `./scripts/prod/meshctl-down-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+
+If you use the bundle-per-host approach, you can ignore the Compose-centric sections below (they exist as reference/demo variants).
 
 ### Required environment variables
 

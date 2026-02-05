@@ -9,3 +9,4 @@ out/
 .env
 scripts/prod/*.env
 run/
+**/__pycache__/

@@ -1,28 +1,19 @@
 all:
   vars:
-    # Default images (override per-host if needed)
+    # This file is intentionally shaped like an Ansible inventory YAML so it can be
+    # used as the *single source of truth* for:
+    # - hosts (server/app, dc1/dc2)
+    # - per-service settings (ports, actuator health paths, upstreams)
+    #
+    # To render per-host runtime bundles (single JSON per host):
+    #   ansible-inventory -i config/mesh.example.yml --list > inventory.json
+    #   python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
+    #
     consul_image: docker.io/hashicorp/consul:1.17
     envoy_image: docker.io/envoyproxy/envoy:v1.29-latest
-
-    # Optional: for remote UI/API access (defaults to localhost-only in scripts)
     mgmt_bind_addr: 127.0.0.1
 
-    # Service catalog (drives service registrations + mesh defaults/intentions)
-    #
-    # Each service:
-    # - name: Consul service name
-    # - port: legacy process port on the app VM
-    # - protocol: http|tcp (used for service-defaults)
-    # - check: health check configuration (type http|tcp + optional tuning)
-    #   - type: http|tcp
-    #   - path: (http only) default /actuator/health
-    #   - interval: default 5s
-    #   - timeout: default 1s
-    #   - failures_before_critical: default 3
-    #   - success_before_passing: default 3
-    # - sidecar_port: local Connect proxy listener (service-sidecar)
-    # - upstreams: optional list of upstream listeners exposed by the sidecar
-    # - tags/meta: optional Consul service tags and metadata (merged with datacenter/instanceRole)
+    # Service catalog (drives registrations + intentions + service-resolvers)
     service_catalog:
       - name: webservice
         port: 8080
@@ -44,7 +35,7 @@ all:
       - name: refdata
         port: 8082
         protocol: http
-        check: { type: http, path: /actuator/health }
+        check: { type: http, path: /health }
         sidecar_port: 21002
 
       - name: itch-feed
@@ -53,24 +44,8 @@ all:
         check: { type: tcp }
         sidecar_port: 21003
 
-      # Optional demo service (dc1 only): client consumes ITCH feed via sidecar upstream 19100.
-      - name: itch-consumer
-        port: 9100
-        protocol: http
-        check: { type: http, path: /health }
-        sidecar_port: 21004
-        upstreams:
-          - { destination_name: itch-feed, local_bind_port: 19100 }
-
-    # Optional: select which legacy services exist on app hosts (comma-separated).
-    # If empty, the renderers output templates for all services in `service_catalog`.
     enabled_services: "webservice,ordermanager,refdata,itch-feed"
-
-    # Optional: enable the demo itch-consumer (dc1 only)
     enable_itch_consumer: "0"
-
-    # Optional: in dc2, prefer dc1 primary instances for these services.
-    # Example: if you want webservice in dc2 to prefer ordermanager in dc1 when healthy.
     dc2_prefer_dc1_services: ["ordermanager"]
 
   children:
@@ -101,3 +76,4 @@ all:
           dc: dc2
           host_ip: 10.0.1.10
           consul_retry_join: "10.0.1.21"
+
