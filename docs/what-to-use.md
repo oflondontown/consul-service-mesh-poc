@@ -29,7 +29,7 @@ Use this if:
 
 Use this if you want a quick demo on one machine.
 
-- `quickstart/README.md` → Option A
+- `quickstart/README.md` -> Option A
 - Uses the Compose files (`docker-compose.yml`, etc.)
 
 ## Reference / legacy config directories
@@ -41,4 +41,3 @@ These exist mainly to support the containerised demo and/or as examples. If you 
 - `docker-compose*.yml` (Compose-based launches)
 
 The bundle-per-host approach generates the equivalents into `run/mesh/expanded/...` and points the runtime scripts at those generated directories.
-

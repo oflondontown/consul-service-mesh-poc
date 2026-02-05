@@ -1,0 +1,35 @@
+@startuml
+title Production topology (bundle-per-host, minimal footprint)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+package "dc1" as dc1 {
+  node "dc1-consul-01 (VM)\nPodman: consul-server-dc1\nPodman: mesh-gateway-dc1" as dc1_server
+  node "dc1-app-01 (VM)\nPodman: consul-agent-dc1\nPodman: *-envoy-dc1\nHost procs: webservice/ordermanager/refdata/itch-feed" as dc1_app
+}
+
+package "dc2" as dc2 {
+  node "dc2-consul-01 (VM)\nPodman: consul-server-dc2\nPodman: mesh-gateway-dc2" as dc2_server
+  node "dc2-app-01 (VM)\nPodman: consul-agent-dc2\nPodman: *-envoy-dc2\nHost procs: webservice/ordermanager/refdata/itch-feed" as dc2_app
+}
+
+dc1_server <--> dc2_server : WAN federation\n(catalog + cross-DC discovery)
+dc1_server <--> dc2_server : mesh-gateway mTLS\n:8443
+
+dc1_app --> dc1_server : LAN: Consul gossip/queries\n(joins via consul_retry_join)
+dc2_app --> dc2_server : LAN: Consul gossip/queries\n(joins via consul_retry_join)
+
+dc1_app --> dc1_server : cross-DC traffic exits via local mesh gateway\n(MeshGateway.Mode=local)
+dc2_app --> dc2_server : cross-DC traffic exits via local mesh gateway\n(MeshGateway.Mode=local)
+
+cloud "Client / GUI" as client
+client --> dc1_app : north-south ingress\n(F5/LB -> webservice)
+client --> dc2_app : DR ingress\n(F5/LB -> webservice)
+
+note bottom
+For HA/quorum, run 3 Consul server VMs per datacenter.\nThis diagram shows the minimal 1-server-per-DC footprint for MVP clarity.
+end note
+
+@enduml
+

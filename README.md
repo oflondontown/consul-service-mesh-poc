@@ -2,7 +2,8 @@
 
 This repo is a runnable POC that demonstrates **automatic primary → secondary failover** for service-to-service calls using **Consul service mesh (Connect) + Envoy sidecars**, without pushing failover state into each application.
 
-If you’re new to this repo, start with `GETTING_STARTED.md` and `docs/what-to-use.md`.
+If you're new to this repo, start with `GETTING_STARTED.md` and `docs/what-to-use.md`.
+Production runbook: `docs/production-runbook.md`.
 
 ## What it demonstrates
 

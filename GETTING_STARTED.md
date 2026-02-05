@@ -39,3 +39,4 @@ Recommended variant: **one bundle JSON per host** (single runtime input).
 For details and troubleshooting, see:
 - `quickstart/README.md` → **Option C**
 - `README.md` → **Option 2: single bundle per host**
+- `docs/production-runbook.md`
