@@ -48,9 +48,8 @@ services:
           args="$args -ui"
         fi
 
-        if [ -n "${CONSUL_BIND_ADDR:-}" ]; then
-          args="$args -bind=${CONSUL_BIND_ADDR}"
-        fi
+        bind="${CONSUL_BIND_ADDR:-0.0.0.0}"
+        args="$args -bind=${bind}"
 
         advertise="${CONSUL_ADVERTISE_ADDR:-${HOST_IP}}"
         advertise_wan="${CONSUL_ADVERTISE_WAN_ADDR:-${HOST_IP}}"
@@ -136,6 +135,10 @@ services:
       # Required: address that the other DC can reach.
       MESH_GATEWAY_WAN_ADDRESS: ${MESH_GATEWAY_WAN_ADDRESS:-${MESH_GATEWAY_ADDRESS}}
 
+      # Where Envoy actually binds inside the container/pod network namespace.
+      # Keep this bindable (0.0.0.0 is fine); MESH_GATEWAY_ADDRESS is what gets advertised/registered.
+      MESH_GATEWAY_BIND_ADDRESS: ${MESH_GATEWAY_BIND_ADDRESS:-0.0.0.0:8443}
+
       ENVOY_ADMIN_BIND: 0.0.0.0:29100
       EXPOSE_SERVERS: ${EXPOSE_SERVERS:-0}
     volumes:
@@ -154,9 +157,9 @@ services:
 
         echo "Generating mesh gateway bootstrap..."
         if [ "${EXPOSE_SERVERS:-0}" = "1" ]; then
-          consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap -expose-servers >/bootstrap/bootstrap.json
+          consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -bind-address "default=${MESH_GATEWAY_BIND_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap -expose-servers >/bootstrap/bootstrap.json
         else
-          consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+          consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -bind-address "default=${MESH_GATEWAY_BIND_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
         fi
 
   mesh-gateway:

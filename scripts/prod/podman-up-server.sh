@@ -91,15 +91,13 @@ consul_args=(
   "-node=${node}"
   "-datacenter=${DC}"
   -client=0.0.0.0
+  "-bind=${CONSUL_BIND_ADDR:-0.0.0.0}"
   "-advertise=${advertise}"
   "-advertise-wan=${advertise_wan}"
 )
 
 if [[ "${CONSUL_ENABLE_UI:-0}" == "1" ]]; then
   consul_args+=(-ui)
-fi
-if [[ -n "${CONSUL_BIND_ADDR:-}" ]]; then
-  consul_args+=("-bind=${CONSUL_BIND_ADDR}")
 fi
 if [[ -n "${CONSUL_ENCRYPT:-}" ]]; then
   consul_args+=("-encrypt=${CONSUL_ENCRYPT}")
@@ -144,6 +142,7 @@ podman run --rm --pod "${POD}" \
 
 MESH_GATEWAY_ADDRESS="${MESH_GATEWAY_ADDRESS:-${HOST_IP}:8443}"
 MESH_GATEWAY_WAN_ADDRESS="${MESH_GATEWAY_WAN_ADDRESS:-${MESH_GATEWAY_ADDRESS}}"
+MESH_GATEWAY_BIND_ADDRESS="${MESH_GATEWAY_BIND_ADDRESS:-0.0.0.0:8443}"
 EXPOSE_SERVERS="${EXPOSE_SERVERS:-0}"
 
 log "Generating mesh-gateway bootstrap for ${DC}..."
@@ -154,13 +153,14 @@ podman run --rm --pod "${POD}" \
   -e ENVOY_ADMIN_BIND="0.0.0.0:29100" \
   -e MESH_GATEWAY_ADDRESS="${MESH_GATEWAY_ADDRESS}" \
   -e MESH_GATEWAY_WAN_ADDRESS="${MESH_GATEWAY_WAN_ADDRESS}" \
+  -e MESH_GATEWAY_BIND_ADDRESS="${MESH_GATEWAY_BIND_ADDRESS}" \
   -e EXPOSE_SERVERS="${EXPOSE_SERVERS}" \
   -v "${GW_BOOTSTRAP_VOL}:/bootstrap" \
   "${CONSUL_IMAGE}" sh -ec '
     if [ "${EXPOSE_SERVERS:-0}" = "1" ]; then
-      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap -expose-servers >/bootstrap/bootstrap.json
+      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -bind-address "default=${MESH_GATEWAY_BIND_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap -expose-servers >/bootstrap/bootstrap.json
     else
-      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
+      consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -bind-address "default=${MESH_GATEWAY_BIND_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap >/bootstrap/bootstrap.json
     fi
   '
 

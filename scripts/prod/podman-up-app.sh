@@ -126,7 +126,8 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
     args=\"\$args -node=\${node} -datacenter=${DC} -client=0.0.0.0\"
     args=\"\$args -config-dir=/consul/config/rendered\"
 
-    if [ -n \"\${CONSUL_BIND_ADDR:-}\" ]; then args=\"\$args -bind=\${CONSUL_BIND_ADDR}\"; fi
+    bind=\"\${CONSUL_BIND_ADDR:-0.0.0.0}\"
+    args=\"\$args -bind=\${bind}\"
 
     advertise=\"\${CONSUL_ADVERTISE_ADDR:-${HOST_IP}}\"
     args=\"\$args -advertise=\${advertise}\"
