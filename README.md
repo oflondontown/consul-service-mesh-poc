@@ -342,8 +342,10 @@ Failover is **not** an app setting. It’s mesh configuration:
   - `docker/consul/config-entries/itch-feed-resolver-dc2.hcl`
 - Mesh gateway routing (cross-DC traffic via gateways):
   - `docker/consul/config-entries/proxy-defaults.hcl`
+- Service protocol defaults (HTTP/TCP):
+  - `docker/consul/config-entries/service-defaults-*.hcl`
 - Intentions (allow rules):
-  - `docker/consul/config-entries/intentions.hcl`
+  - `docker/consul/config-entries/intentions-*.hcl`
 
 The key idea is: **apps always call `localhost:<upstreamPort>`**, and Consul decides which datacenter/instance is healthy and routable.
 

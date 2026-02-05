@@ -131,8 +131,12 @@ podman run --rm --pod "${POD}" \
   -v "${REPO_ROOT}/docker/consul/config-entries:/config-entries:ro" \
   "${CONSUL_IMAGE}" sh -ec "
     consul config write -datacenter='${DC}' /config-entries/proxy-defaults.hcl
-    consul config write -datacenter='${DC}' /config-entries/service-defaults.hcl
-    consul config write -datacenter='${DC}' /config-entries/intentions.hcl
+    for f in /config-entries/service-defaults-*.hcl; do
+      consul config write -datacenter='${DC}' \"\$f\"
+    done
+    for f in /config-entries/intentions-*.hcl; do
+      consul config write -datacenter='${DC}' \"\$f\"
+    done
     consul config write -datacenter='${DC}' \"/config-entries/refdata-resolver-${DC}.hcl\"
     consul config write -datacenter='${DC}' \"/config-entries/ordermanager-resolver-${DC}.hcl\"
     consul config write -datacenter='${DC}' \"/config-entries/itch-feed-resolver-${DC}.hcl\"

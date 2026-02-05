@@ -109,8 +109,12 @@ services:
 
         echo "Writing config entries to ${CONSUL_DATACENTER}..."
         consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/proxy-defaults.hcl
-        consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/service-defaults.hcl
-        consul config write -datacenter="${CONSUL_DATACENTER}" /config-entries/intentions.hcl
+        for f in /config-entries/service-defaults-*.hcl; do
+          consul config write -datacenter="${CONSUL_DATACENTER}" "$f"
+        done
+        for f in /config-entries/intentions-*.hcl; do
+          consul config write -datacenter="${CONSUL_DATACENTER}" "$f"
+        done
         consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/refdata-resolver-${CONSUL_DATACENTER}.hcl"
         consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/ordermanager-resolver-${CONSUL_DATACENTER}.hcl"
         consul config write -datacenter="${CONSUL_DATACENTER}" "/config-entries/itch-feed-resolver-${CONSUL_DATACENTER}.hcl"
