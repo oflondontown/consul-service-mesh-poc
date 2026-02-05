@@ -1,6 +1,0 @@
-# service_id admin_port
-webservice-dc2 29000
-ordermanager-dc2 29001
-refdata-dc2 29002
-itch-feed-dc2 29003
-
