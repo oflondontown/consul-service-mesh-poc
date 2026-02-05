@@ -58,11 +58,11 @@ podman pod rm -f "${POD}" >/dev/null 2>&1 || true
 if [[ "${REMOVE_VOLUMES:-0}" == "1" ]]; then
   log "Removing volumes for ${DC}"
   podman volume rm -f "consul-agent-data-${DC}" >/dev/null 2>&1 || true
-  podman volume rm -f "webservice-envoy-bootstrap-${DC}" >/dev/null 2>&1 || true
-  podman volume rm -f "ordermanager-envoy-bootstrap-${DC}" >/dev/null 2>&1 || true
-  podman volume rm -f "refdata-envoy-bootstrap-${DC}" >/dev/null 2>&1 || true
-  podman volume rm -f "itch-feed-envoy-bootstrap-${DC}" >/dev/null 2>&1 || true
-  podman volume rm -f "itch-consumer-envoy-bootstrap-${DC}" >/dev/null 2>&1 || true
+  # Remove all sidecar bootstrap volumes for this DC (supports dynamic sidecar lists).
+  while IFS= read -r v; do
+    [[ -n "${v}" ]] || continue
+    podman volume rm -f "${v}" >/dev/null 2>&1 || true
+  done < <(podman volume ls --format '{{.Name}}' | grep -E -- "-envoy-bootstrap-${DC}$" || true)
 fi
 
 log "Down: ${POD}"

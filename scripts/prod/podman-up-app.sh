@@ -56,47 +56,97 @@ require_env CONSUL_RETRY_JOIN
 
 DC="${CONSUL_DATACENTER}"
 HOST_IP="${HOST_IP}"
+ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER:-0}"
+ENVOY_ADMIN_PORT_OFFSET="${ENVOY_ADMIN_PORT_OFFSET:-8000}"
+
+TEMPLATE_DIR="${REPO_ROOT}/docker/consul/services-vmhost/${DC}"
+[[ -d "${TEMPLATE_DIR}" ]] || die "Missing service template directory: ${TEMPLATE_DIR}"
 
 POD="mesh-app-${DC}"
 AGENT_CONTAINER="consul-agent-${DC}"
 
 AGENT_DATA_VOL="consul-agent-data-${DC}"
-WEB_BOOTSTRAP_VOL="webservice-envoy-bootstrap-${DC}"
-OM_BOOTSTRAP_VOL="ordermanager-envoy-bootstrap-${DC}"
-REF_BOOTSTRAP_VOL="refdata-envoy-bootstrap-${DC}"
-ITCH_FEED_BOOTSTRAP_VOL="itch-feed-envoy-bootstrap-${DC}"
-ITCH_CONSUMER_BOOTSTRAP_VOL="itch-consumer-envoy-bootstrap-${DC}"
 
 ensure_volume "${AGENT_DATA_VOL}"
-ensure_volume "${WEB_BOOTSTRAP_VOL}"
-ensure_volume "${OM_BOOTSTRAP_VOL}"
-ensure_volume "${REF_BOOTSTRAP_VOL}"
-ensure_volume "${ITCH_FEED_BOOTSTRAP_VOL}"
 
-ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER:-0}"
-if [[ "${DC}" == "dc1" && "${ENABLE_ITCH_CONSUMER}" == "1" ]]; then
-  ensure_volume "${ITCH_CONSUMER_BOOTSTRAP_VOL}"
-fi
+json_string_field() {
+  local field="$1"
+  local file="$2"
+  sed -nE "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p" "${file}" | head -n 1
+}
 
-ensure_pod "${POD}" \
-  -p "127.0.0.1:8500:8500/tcp" \
-  -p "127.0.0.1:8502:8502/tcp" \
-  -p "8301:8301/tcp" \
-  -p "8301:8301/udp" \
-  -p "21000:21000/tcp" \
-  -p "21001:21001/tcp" \
-  -p "21002:21002/tcp" \
-  -p "21003:21003/tcp" \
-  -p "21004:21004/tcp" \
-  -p "127.0.0.1:18082:18082/tcp" \
-  -p "127.0.0.1:18083:18083/tcp" \
-  -p "127.0.0.1:18182:18182/tcp" \
-  -p "127.0.0.1:19100:19100/tcp" \
-  -p "127.0.0.1:29000:29000/tcp" \
-  -p "127.0.0.1:29001:29001/tcp" \
-  -p "127.0.0.1:29002:29002/tcp" \
-  -p "127.0.0.1:29003:29003/tcp" \
-  -p "127.0.0.1:29004:29004/tcp"
+json_sidecar_port() {
+  local file="$1"
+  awk '
+    BEGIN { in_sidecar = 0 }
+    /"sidecar_service"[[:space:]]*:/ { in_sidecar = 1; next }
+    in_sidecar && /"port"[[:space:]]*:/ {
+      gsub(/[^0-9]/, "", $0);
+      print $0;
+      exit
+    }
+  ' "${file}"
+}
+
+json_upstream_ports() {
+  local file="$1"
+  sed -nE 's/.*"local_bind_port"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "${file}"
+}
+
+declare -A port_seen=()
+pod_ports=()
+add_pod_port() {
+  local spec="$1"
+  if [[ -z "${port_seen[${spec}]:-}" ]]; then
+    port_seen["${spec}"]=1
+    pod_ports+=(-p "${spec}")
+  fi
+}
+
+services_to_bootstrap=()
+
+add_pod_port "127.0.0.1:8500:8500/tcp"
+add_pod_port "127.0.0.1:8502:8502/tcp"
+add_pod_port "8301:8301/tcp"
+add_pod_port "8301:8301/udp"
+
+shopt -s nullglob
+for f in "${TEMPLATE_DIR}"/*.json; do
+  service_name="$(json_string_field name "${f}")"
+  service_id="$(json_string_field id "${f}")"
+
+  if [[ -z "${service_name}" || -z "${service_id}" ]]; then
+    die "Failed to parse service name/id from: ${f}"
+  fi
+
+  if [[ "${service_name}" == "itch-consumer" && "${ENABLE_ITCH_CONSUMER}" != "1" ]]; then
+    continue
+  fi
+
+  if ! grep -q '"sidecar_service"' "${f}"; then
+    continue
+  fi
+
+  sidecar_port="$(json_sidecar_port "${f}")"
+  [[ -n "${sidecar_port}" ]] || die "Failed to parse sidecar_service.port from: ${f}"
+
+  admin_port="$((sidecar_port + ENVOY_ADMIN_PORT_OFFSET))"
+  bootstrap_vol="${service_name}-envoy-bootstrap-${DC}"
+
+  services_to_bootstrap+=("${service_name}|${service_id}|${admin_port}|${bootstrap_vol}")
+  ensure_volume "${bootstrap_vol}"
+
+  add_pod_port "${sidecar_port}:${sidecar_port}/tcp"
+  add_pod_port "127.0.0.1:${admin_port}:${admin_port}/tcp"
+
+  while IFS= read -r up_port; do
+    [[ -n "${up_port}" ]] || continue
+    add_pod_port "127.0.0.1:${up_port}:${up_port}/tcp"
+  done < <(json_upstream_ports "${f}")
+done
+shopt -u nullglob
+
+ensure_pod "${POD}" "${pod_ports[@]}"
 
 log "Starting Consul agent (${DC})..."
 podman container exists "${AGENT_CONTAINER}" >/dev/null 2>&1 && true
@@ -110,6 +160,7 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
   -e CONSUL_ENCRYPT="${CONSUL_ENCRYPT:-}" \
   -e CONSUL_BIND_ADDR="${CONSUL_BIND_ADDR:-}" \
   -e CONSUL_ADVERTISE_ADDR="${CONSUL_ADVERTISE_ADDR:-}" \
+  -e ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER}" \
   -v "${REPO_ROOT}/docker/consul/client.hcl:/consul/config/client.hcl:ro" \
   -v "${REPO_ROOT}/docker/consul/services-vmhost/${DC}:/consul/config/templates:ro" \
   -v "${AGENT_DATA_VOL}:/consul/data" \
@@ -117,6 +168,9 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
     mkdir -p /consul/config/rendered
     for f in /consul/config/templates/*.json; do
       name=\"\$(basename \"\$f\")\"
+      if [ \"\${ENABLE_ITCH_CONSUMER:-0}\" != \"1\" ] && [ \"\$name\" = \"itch-consumer.json\" ]; then
+        continue
+      fi
       sed \"s/__HOST_IP__/${HOST_IP}/g\" \"\$f\" >\"/consul/config/rendered/\$name\"
     done
 
@@ -187,22 +241,11 @@ ensure_envoy() {
     '
 }
 
-bootstrap_sidecar "webservice-${DC}" 29000 "${WEB_BOOTSTRAP_VOL}"
-bootstrap_sidecar "ordermanager-${DC}" 29001 "${OM_BOOTSTRAP_VOL}"
-bootstrap_sidecar "refdata-${DC}" 29002 "${REF_BOOTSTRAP_VOL}"
-bootstrap_sidecar "itch-feed-${DC}" 29003 "${ITCH_FEED_BOOTSTRAP_VOL}"
+for entry in "${services_to_bootstrap[@]}"; do
+  IFS='|' read -r service_name service_id admin_port bootstrap_vol <<<"${entry}"
 
-ensure_envoy "webservice-envoy-${DC}" "${WEB_BOOTSTRAP_VOL}"
-ensure_envoy "ordermanager-envoy-${DC}" "${OM_BOOTSTRAP_VOL}"
-ensure_envoy "refdata-envoy-${DC}" "${REF_BOOTSTRAP_VOL}"
-ensure_envoy "itch-feed-envoy-${DC}" "${ITCH_FEED_BOOTSTRAP_VOL}"
-
-if [[ "${DC}" == "dc1" && "${ENABLE_ITCH_CONSUMER}" == "1" ]]; then
-  log "Enabling itch-consumer envoy (dc1 only)"
-  # Note: pod port mappings for 19100/21004/29004 must be present at pod creation time.
-  # If you need this, recreate the pod: podman pod rm -f ${POD}
-  bootstrap_sidecar "itch-consumer-${DC}" 29004 "${ITCH_CONSUMER_BOOTSTRAP_VOL}"
-  ensure_envoy "itch-consumer-envoy-${DC}" "${ITCH_CONSUMER_BOOTSTRAP_VOL}"
-fi
+  bootstrap_sidecar "${service_id}" "${admin_port}" "${bootstrap_vol}"
+  ensure_envoy "${service_name}-envoy-${DC}" "${bootstrap_vol}"
+done
 
 log "Up: ${POD} (${AGENT_CONTAINER} + envoys)"
