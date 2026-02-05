@@ -58,6 +58,7 @@ DC="${CONSUL_DATACENTER}"
 HOST_IP="${HOST_IP}"
 ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER:-0}"
 ENVOY_ADMIN_PORT_OFFSET="${ENVOY_ADMIN_PORT_OFFSET:-8000}"
+ENABLED_SERVICES="${ENABLED_SERVICES:-}"
 
 TEMPLATE_DIR="${REPO_ROOT}/docker/consul/services-vmhost/${DC}"
 [[ -d "${TEMPLATE_DIR}" ]] || die "Missing service template directory: ${TEMPLATE_DIR}"
@@ -97,8 +98,8 @@ declare -A port_seen=()
 pod_ports=()
 add_pod_port() {
   local spec="$1"
-  if [[ -z "${port_seen[${spec}]:-}" ]]; then
-    port_seen["${spec}"]=1
+  if [[ -z "${port_seen["$spec"]:-}" ]]; then
+    port_seen["$spec"]=1
     pod_ports+=(-p "${spec}")
   fi
 }
@@ -110,6 +111,16 @@ add_pod_port "127.0.0.1:8502:8502/tcp"
 add_pod_port "8301:8301/tcp"
 add_pod_port "8301:8301/udp"
 
+declare -A enabled_service=()
+if [[ -n "${ENABLED_SERVICES}" ]]; then
+  IFS=',' read -r -a enabled_list <<<"${ENABLED_SERVICES}"
+  for s in "${enabled_list[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [[ -n "${s}" ]] && enabled_service["${s}"]=1
+  done
+fi
+
 shopt -s nullglob
 for f in "${TEMPLATE_DIR}"/*.json; do
   service_name="$(json_string_field name "${f}")"
@@ -120,6 +131,10 @@ for f in "${TEMPLATE_DIR}"/*.json; do
   fi
 
   if [[ "${service_name}" == "itch-consumer" && "${ENABLE_ITCH_CONSUMER}" != "1" ]]; then
+    continue
+  fi
+
+  if [[ -n "${ENABLED_SERVICES}" && -z "${enabled_service["$service_name"]:-}" ]]; then
     continue
   fi
 
@@ -161,6 +176,7 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
   -e CONSUL_BIND_ADDR="${CONSUL_BIND_ADDR:-}" \
   -e CONSUL_ADVERTISE_ADDR="${CONSUL_ADVERTISE_ADDR:-}" \
   -e ENABLE_ITCH_CONSUMER="${ENABLE_ITCH_CONSUMER}" \
+  -e ENABLED_SERVICES="${ENABLED_SERVICES}" \
   -v "${REPO_ROOT}/docker/consul/client.hcl:/consul/config/client.hcl:ro" \
   -v "${REPO_ROOT}/docker/consul/services-vmhost/${DC}:/consul/config/templates:ro" \
   -v "${AGENT_DATA_VOL}:/consul/data" \
@@ -170,6 +186,12 @@ podman run -d --name "${AGENT_CONTAINER}" --pod "${POD}" --restart unless-stoppe
       name=\"\$(basename \"\$f\")\"
       if [ \"\${ENABLE_ITCH_CONSUMER:-0}\" != \"1\" ] && [ \"\$name\" = \"itch-consumer.json\" ]; then
         continue
+      fi
+      if [ -n \"\${ENABLED_SERVICES:-}\" ]; then
+        svc=\"\${name%.json}\"
+        if ! echo \",\${ENABLED_SERVICES},\" | grep -q \",\${svc},\"; then
+          continue
+        fi
       fi
       sed \"s/__HOST_IP__/${HOST_IP}/g\" \"\$f\" >\"/consul/config/rendered/\$name\"
     done

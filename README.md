@@ -166,6 +166,10 @@ This is the recommended topology if you can run **dedicated Consul server VMs** 
 
 Note: the official `hashicorp/consul` image does **not** include an `envoy` binary. These Compose files run Envoy from `${ENVOY_IMAGE}` and use one-shot `*-bootstrap` containers (Consul CLI) to generate `/bootstrap/bootstrap.json`. Seeing `*-bootstrap` containers exit is expected.
 
+### Ansible (optional)
+
+If you deploy with Ansible, you can define target hosts and service lists in a YAML inventory and render `scripts/prod/*.env`-compatible env files automatically. See `ansible/README.md`.
+
 ### Required environment variables
 
 - `CONSUL_DATACENTER=dc1|dc2`

@@ -1,0 +1,45 @@
+all:
+  vars:
+    # Default images (override per-host if needed)
+    consul_image: docker.io/hashicorp/consul:1.17
+    envoy_image: docker.io/envoyproxy/envoy:v1.29-latest
+
+    # Optional: for remote UI/API access (defaults to localhost-only in scripts)
+    mgmt_bind_addr: 127.0.0.1
+
+    # Optional: select which legacy services exist on app hosts (comma-separated).
+    # If empty, the podman scripts auto-detect all templates under docker/consul/services-vmhost/<dc>.
+    enabled_services: "webservice,ordermanager,refdata,itch-feed"
+
+    # Optional: enable the demo itch-consumer (dc1 only)
+    enable_itch_consumer: "0"
+
+  children:
+    consul_servers:
+      hosts:
+        dc1-consul-01:
+          dc: dc1
+          host_ip: 10.0.0.21
+          consul_bootstrap_expect: "1"
+          consul_retry_join: "10.0.0.21"
+          consul_retry_join_wan: "10.0.1.21"
+          consul_enable_ui: "1"
+        dc2-consul-01:
+          dc: dc2
+          host_ip: 10.0.1.21
+          consul_bootstrap_expect: "1"
+          consul_retry_join: "10.0.1.21"
+          consul_retry_join_wan: "10.0.0.21"
+          consul_enable_ui: "1"
+
+    app_hosts:
+      hosts:
+        dc1-app-01:
+          dc: dc1
+          host_ip: 10.0.0.10
+          consul_retry_join: "10.0.0.21"
+        dc2-app-01:
+          dc: dc2
+          host_ip: 10.0.1.10
+          consul_retry_join: "10.0.1.21"
+
