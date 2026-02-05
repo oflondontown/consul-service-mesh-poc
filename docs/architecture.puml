@@ -12,7 +12,7 @@ cloud "F5 VIP\n(health-checks /actuator/health\nin dc1 and dc2)" as f5
 node "Datacenter dc1 (primary)" as dc1 {
   node "Consul Server (dc1)\nUI: :8500" as consulDc1
 
-  frame "mesh-gateway-dc1" as mg1 {
+  frame "mesh-gateway (dc1)" as mg1 {
     component "mesh-gateway\nEnvoy :8443\nadmin :19001" as mgw1
   }
 
@@ -60,7 +60,7 @@ node "Datacenter dc1 (primary)" as dc1 {
 node "Datacenter dc2 (secondary/DR)" as dc2 {
   node "Consul Server (dc2)\nUI: :8501" as consulDc2
 
-  frame "mesh-gateway-dc2" as mg2 {
+  frame "mesh-gateway (dc2)" as mg2 {
     component "mesh-gateway\nEnvoy :8443\nadmin :19001" as mgw2
   }
 

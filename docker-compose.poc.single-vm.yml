@@ -143,7 +143,7 @@ services:
 
         echo "Generating mesh gateway bootstrap..."
         consul connect envoy -gateway=mesh -register \
-          -service "mesh-gateway-${CONSUL_DATACENTER}" \
+          -service "mesh-gateway" \
           -address '{{ GetInterfaceIP "eth0" }}:8443' \
           -wan-address "${HOST_IP}:8443" \
           -admin-bind "${ENVOY_ADMIN_BIND}" \

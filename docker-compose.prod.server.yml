@@ -148,7 +148,7 @@ services:
         echo "Waiting for local Consul..."
         for i in $(seq 1 120); do consul info >/dev/null 2>&1 && break; sleep 1; done
 
-        args=(connect envoy -gateway=mesh -register -service "mesh-gateway-${CONSUL_DATACENTER}" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap)
+        args=(connect envoy -gateway=mesh -register -service "mesh-gateway" -address "${MESH_GATEWAY_ADDRESS}" -wan-address "${MESH_GATEWAY_WAN_ADDRESS}" -admin-bind "${ENVOY_ADMIN_BIND}" -bootstrap)
         if [ "${EXPOSE_SERVERS:-0}" = "1" ]; then
           args+=( -expose-servers )
         fi

@@ -32,6 +32,8 @@ Commands (from repo root):
 
 This is the closest to your target topology:
 
+- This is **not** a 1-laptop/1-VM setup. It assumes **separate VMs/hosts** (each with its own port space). If you want to demo cross-DC failover on one laptop, use **Option A**.
+
 - Per DC:
   - **1x Consul server VM** running `consul-server + mesh-gateway` containers
   - **1x application VM** running `consul-agent + envoy sidecars` containers
@@ -100,4 +102,3 @@ Stop containers:
 - dc2 app VM: `./scripts/prod/podman-down-app.sh --env-file quickstart/env/prod/app.dc2.env`
 - dc1 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc1.env`
 - dc2 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc2.env`
-

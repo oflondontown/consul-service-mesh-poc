@@ -153,7 +153,7 @@ podman run --rm --pod "${POD}" \
   -e EXPOSE_SERVERS="${EXPOSE_SERVERS}" \
   -v "${GW_BOOTSTRAP_VOL}:/bootstrap" \
   "${CONSUL_IMAGE}" sh -ec "
-    args=(connect envoy -gateway=mesh -register -service \"mesh-gateway-${DC}\" -address \"${MESH_GATEWAY_ADDRESS}\" -wan-address \"${MESH_GATEWAY_WAN_ADDRESS}\" -admin-bind \"0.0.0.0:29100\" -bootstrap)
+    args=(connect envoy -gateway=mesh -register -service \"mesh-gateway\" -address \"${MESH_GATEWAY_ADDRESS}\" -wan-address \"${MESH_GATEWAY_WAN_ADDRESS}\" -admin-bind \"0.0.0.0:29100\" -bootstrap)
     if [ \"${EXPOSE_SERVERS}\" = \"1\" ]; then args+=( -expose-servers ); fi
     consul \"\${args[@]}\" >/bootstrap/bootstrap.json
   "

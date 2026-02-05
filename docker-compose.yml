@@ -60,7 +60,7 @@ services:
         echo "Waiting for local Consul server (dc1)..."
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Generating mesh gateway bootstrap (dc1)..."
-        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc1" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
 
   mesh-gateway-dc1:
     image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}
@@ -96,7 +96,7 @@ services:
         echo "Waiting for local Consul server (dc2)..."
         for i in $(seq 1 60); do consul info >/dev/null 2>&1 && break; sleep 1; done
         echo "Generating mesh gateway bootstrap (dc2)..."
-        consul connect envoy -gateway=mesh -register -service "mesh-gateway-dc2" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
+        consul connect envoy -gateway=mesh -register -service "mesh-gateway" -address '{{ GetInterfaceIP "eth0" }}:8443' -wan-address '{{ GetInterfaceIP "eth0" }}:8443' -admin-bind 0.0.0.0:19001 -bootstrap >/bootstrap/bootstrap.json
 
   mesh-gateway-dc2:
     image: ${ENVOY_IMAGE:-docker.io/envoyproxy/envoy:v1.29-latest}

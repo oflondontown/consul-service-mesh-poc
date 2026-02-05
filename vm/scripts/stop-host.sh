@@ -43,7 +43,7 @@ else
 fi
 
 if [ "$STOP_MESH_GATEWAY" = "1" ]; then
-  gateway_service_name="${GATEWAY_SERVICE_NAME:-mesh-gateway-$CONSUL_DATACENTER}"
+  gateway_service_name="${GATEWAY_SERVICE_NAME:-mesh-gateway}"
   pid_file="$PID_DIR/${gateway_service_name}.mesh-gateway.pid"
   if [ -f "$pid_file" ]; then
     "$SCRIPT_DIR/stop-by-pidfile.sh" "$pid_file" || true

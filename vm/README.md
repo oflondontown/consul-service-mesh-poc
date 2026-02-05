@@ -189,7 +189,7 @@ On the mesh gateway host in **dc1**:
 
 ```bash
 export CONSUL_HTTP_ADDR=http://127.0.0.1:8500
-export GATEWAY_SERVICE_NAME=mesh-gateway-dc1
+export GATEWAY_SERVICE_NAME=mesh-gateway
 export GATEWAY_ADDRESS=<dc1-gateway-private-ip>:8443
 export GATEWAY_WAN_ADDRESS=<dc1-gateway-wan-ip-or-same>:8443
 export PID_FILE=~/run/pids/mesh-gateway.pid
@@ -200,7 +200,7 @@ On the mesh gateway host in **dc2**:
 
 ```bash
 export CONSUL_HTTP_ADDR=http://127.0.0.1:8500
-export GATEWAY_SERVICE_NAME=mesh-gateway-dc2
+export GATEWAY_SERVICE_NAME=mesh-gateway
 export GATEWAY_ADDRESS=<dc2-gateway-private-ip>:8443
 export GATEWAY_WAN_ADDRESS=<dc2-gateway-wan-ip-or-same>:8443
 export PID_FILE=~/run/pids/mesh-gateway.pid

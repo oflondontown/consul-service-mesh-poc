@@ -75,10 +75,10 @@ How this relates to a DR site:
   - Non-root VM deployment scripts/config examples for RHEL 8.10 (run Consul agent + Envoy sidecar without containers): `vm/README.md`.
 - `docker-compose.yml`
   - Defines the two Consul datacenters, the mock services, and sidecars; mounts `docker/` configs into the appropriate containers.
-- `docker-compose.poc.single-vm.yml`
-  - Single-VM POC mesh stack: runs Consul + mesh gateway + Envoy sidecars in containers (no app containers), so your application services can stay as legacy processes on the VM.
-- `docker-compose.poc.single-vm.dc1.yml`
-  - Optional overlay for dc1-only services (adds the demo `itch-consumer` sidecar).
+- `docker-compose.mesh-only.yml`
+  - Runs only Consul + Envoy (mesh) in containers (no app containers). Designed for Podman rootless (published ports) so your application services can stay as legacy processes on the VM.
+- `docker-compose.mesh-only.dc1.yml`
+  - Optional overlay for dc1-only services (adds the `itch-consumer` sidecar).
 - `docker-compose.prod.server.yml`
   - Production-shaped: runs a **Consul server + mesh gateway** on a dedicated Consul VM (run on multiple VMs per DC for quorum/HA).
 - `docker-compose.prod.app.yml`
@@ -95,8 +95,6 @@ How this relates to a DR site:
     - `docs/deployment-option-3.puml` (topology option 3)
 
 ## Quickstart
-
-If you want a copy/paste walkthrough, see: `quickstart/README.md`.
 
 Prereqs:
 
@@ -123,8 +121,8 @@ UIs:
 
 What to look for in the Consul UI:
 
-- In **dc1 UI**, open **Services** and confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway-dc1`.
-- In **dc2 UI**, confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway-dc2`.
+- In **dc1 UI**, open **Services** and confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway`.
+- In **dc2 UI**, confirm you can see: `webservice`, `ordermanager`, `refdata`, `itch-feed`, `mesh-gateway`.
 - Open `refdata` in **dc1** and you should see `refdata-dc1` as **passing** initially.
 
 Service endpoints (local dev):
@@ -298,9 +296,9 @@ If you change any `local_bind_port` / sidecar `port` in Consul registration, you
 
 ## Single-VM POC (apps on VM, mesh in containers)
 
-If you cannot run dedicated Consul server VMs yet, you can use the **single-VM POC mesh stack** on each app VM:
+If you cannot run dedicated Consul server VMs yet, you can use the **single-VM** mesh-only stack on each app VM:
 
-- `docker-compose.poc.single-vm.yml` (+ optional `docker-compose.poc.single-vm.dc1.yml`)
+- `docker-compose.mesh-only.yml` (+ optional `docker-compose.mesh-only.dc1.yml`)
 
 In this mode, the Consul process runs in **server mode** and also acts as the **local agent** that runs health checks for the VM-hosted apps.
 
@@ -308,14 +306,14 @@ This mode also uses `${ENVOY_IMAGE}` + one-shot `*-bootstrap` containers (Consul
 
 Example:
 
-- dc1 VM: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN_WAN=10.0.1.10 podman compose -f docker-compose.poc.single-vm.yml -f docker-compose.poc.single-vm.dc1.yml up -d`
-- dc2 VM: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN_WAN=10.0.0.10 podman compose -f docker-compose.poc.single-vm.yml up -d`
+- dc1 VM: `CONSUL_DATACENTER=dc1 HOST_IP=10.0.0.10 CONSUL_RETRY_JOIN_WAN=10.0.1.10 podman compose -f docker-compose.mesh-only.yml -f docker-compose.mesh-only.dc1.yml up -d`
+- dc2 VM: `CONSUL_DATACENTER=dc2 HOST_IP=10.0.1.10 CONSUL_RETRY_JOIN_WAN=10.0.0.10 podman compose -f docker-compose.mesh-only.yml up -d`
 
 ## Podman Desktop notes (Windows/macOS/Linux)
 
 - This repo includes multiple Compose files:
   - `docker-compose.yml` (everything containerised)
-  - `docker-compose.poc.single-vm.yml` (+ optional `docker-compose.poc.single-vm.dc1.yml`) for a **single-VM POC** where apps run on the VM and Consul+Envoy run in containers on the same VM.
+  - `docker-compose.mesh-only.yml` (+ optional `docker-compose.mesh-only.dc1.yml`) for a **single-VM POC** where apps run on the VM and Consul+Envoy run in containers on the same VM.
   - `docker-compose.prod.server.yml` + `docker-compose.prod.app.yml` for a **production-shaped** topology with dedicated Consul server VM(s) and separate app VM(s).
 - All Compose files in this repo avoid host networking (published ports) so they work with Podman without root privileges.
 - Podman supports the Compose spec; these files work with `podman compose` or `podman-compose`.
@@ -460,10 +458,6 @@ Already decided for this POC direction:
 - You want **cross-datacenter east–west failover** (services in `dc1` can fail over their upstreams to `dc2` when needed). This repo demonstrates that model via Consul WAN federation + `service-resolver` failover.
 - GUI → `webservice` ingress will be handled by an **F5** (north–south).
 - F5 will health-check `webservice` in **dc1 and dc2** and **automatically fail over to dc2** when needed.
-
-Still to decide:
-
-- Do you want the F5 setup to be **active/standby** only, or **active/active** (serve both sites) with geo/latency rules?
 
 ### F5 integration notes (guidance)
 
