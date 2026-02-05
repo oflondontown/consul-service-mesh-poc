@@ -70,8 +70,8 @@ services:
         exec consul $args
     ports:
       # Local debugging only (avoid exposing Consul HTTP/gRPC in production unless intended).
-      - "127.0.0.1:8500:8500"
-      - "127.0.0.1:8502:8502"
+      - "${MGMT_BIND_ADDR:-127.0.0.1}:8500:8500"
+      - "${MGMT_BIND_ADDR:-127.0.0.1}:8502:8502"
 
       # Required for LAN/WAN cluster membership (servers + clients) and WAN federation.
       - "8300:8300"
@@ -179,7 +179,7 @@ services:
         exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}
     ports:
       - "8443:8443"
-      - "127.0.0.1:29100:29100"
+      - "${MGMT_BIND_ADDR:-127.0.0.1}:29100:29100"
     networks: [mesh]
 
 volumes:

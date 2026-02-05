@@ -60,6 +60,8 @@ POD="mesh-server-${DC}"
 CONSUL_CONTAINER="consul-server-${DC}"
 GW_CONTAINER="mesh-gateway-${DC}"
 
+MGMT_BIND_ADDR="${MGMT_BIND_ADDR:-127.0.0.1}"
+
 CONSUL_DATA_VOL="consul-server-data-${DC}"
 GW_BOOTSTRAP_VOL="mesh-gateway-bootstrap-${DC}"
 
@@ -67,15 +69,15 @@ ensure_volume "${CONSUL_DATA_VOL}"
 ensure_volume "${GW_BOOTSTRAP_VOL}"
 
 ensure_pod "${POD}" \
-  -p "127.0.0.1:8500:8500/tcp" \
-  -p "127.0.0.1:8502:8502/tcp" \
+  -p "${MGMT_BIND_ADDR}:8500:8500/tcp" \
+  -p "${MGMT_BIND_ADDR}:8502:8502/tcp" \
   -p "8300:8300/tcp" \
   -p "8301:8301/tcp" \
   -p "8301:8301/udp" \
   -p "8302:8302/tcp" \
   -p "8302:8302/udp" \
   -p "8443:8443/tcp" \
-  -p "127.0.0.1:29100:29100/tcp"
+  -p "${MGMT_BIND_ADDR}:29100:29100/tcp"
 
 bootstrap_expect="${CONSUL_BOOTSTRAP_EXPECT:-3}"
 node="${CONSUL_NODE_NAME:-consul-server-${DC}-$(echo "${HOST_IP}" | tr '.' '-')}"
