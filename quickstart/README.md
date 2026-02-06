@@ -30,6 +30,12 @@ Copy `run/mesh/bundles/<host>.bundle.json` to each matching VM.
 
 ## 3) Start the mesh (runtime)
 
+Before first start on each VM (deploy-time):
+
+```bash
+python tools/meshctl.py expand --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
 On each server VM:
 
 ```bash
@@ -85,4 +91,3 @@ Stop mesh:
 ```
 
 For more detail and troubleshooting, see `docs/production-runbook.md`.
-

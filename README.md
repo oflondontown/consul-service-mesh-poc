@@ -42,6 +42,14 @@ onto that VM.
 
 `ansible-inventory` is only required at deploy time (it’s used to evaluate/merge an Ansible-style inventory YAML into a single JSON structure).
 
+### 2b) Deploy-time: expand the bundle on each VM (recommended)
+
+To minimise runtime file writes, expand the bundle **once** during deployment on each VM:
+
+```bash
+python tools/meshctl.py expand --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
 ### 3) Runtime: start/stop
 
 On each VM (Autosys-friendly):
@@ -103,4 +111,3 @@ On app VMs only (if running mock apps):
 - `docker/consul/client.hcl` (baseline Consul config enabling Connect)
 - `scripts/mock/` and `services/` (optional mock apps)
 - `archive/` (deprecated demos, Compose stacks, and old reference configs)
-

@@ -1,0 +1,72 @@
+{
+  "all": {
+    "vars": {
+      "consul_image": "docker.io/hashicorp/consul:1.17",
+      "envoy_image": "docker.io/envoyproxy/envoy:v1.29-latest",
+      "mgmt_bind_addr": "127.0.0.1",
+      "service_catalog": [
+        {
+          "name": "webservice",
+          "port": 8080,
+          "protocol": "http",
+          "check": { "type": "http", "path": "/actuator/health" },
+          "sidecar_port": 21000,
+          "upstreams": [
+            { "destination_name": "refdata", "local_bind_port": 18082 },
+            { "destination_name": "ordermanager", "local_bind_port": 18083 }
+          ]
+        },
+        {
+          "name": "ordermanager",
+          "port": 8081,
+          "protocol": "http",
+          "check": { "type": "http", "path": "/actuator/health" },
+          "sidecar_port": 21001,
+          "upstreams": [{ "destination_name": "refdata", "local_bind_port": 18182 }]
+        },
+        {
+          "name": "refdata",
+          "port": 8082,
+          "protocol": "http",
+          "check": { "type": "http", "path": "/health" },
+          "sidecar_port": 21002
+        },
+        {
+          "name": "itch-feed",
+          "port": 9000,
+          "protocol": "tcp",
+          "check": { "type": "tcp" },
+          "sidecar_port": 21003
+        }
+      ],
+      "enabled_services": "webservice,ordermanager,refdata,itch-feed",
+      "enable_itch_consumer": "0",
+      "dc2_prefer_dc1_services": ["ordermanager"]
+    }
+  },
+  "consul_servers": { "hosts": ["dc1-consul-01", "dc2-consul-01"] },
+  "app_hosts": { "hosts": ["dc1-app-01", "dc2-app-01"] },
+  "_meta": {
+    "hostvars": {
+      "dc1-consul-01": {
+        "dc": "dc1",
+        "host_ip": "10.0.0.21",
+        "consul_bootstrap_expect": "1",
+        "consul_retry_join": "10.0.0.21",
+        "consul_retry_join_wan": "10.0.1.21",
+        "consul_enable_ui": "1"
+      },
+      "dc2-consul-01": {
+        "dc": "dc2",
+        "host_ip": "10.0.1.21",
+        "consul_bootstrap_expect": "1",
+        "consul_retry_join": "10.0.1.21",
+        "consul_retry_join_wan": "10.0.0.21",
+        "consul_enable_ui": "1"
+      },
+      "dc1-app-01": { "dc": "dc1", "host_ip": "10.0.0.10", "consul_retry_join": "10.0.0.21" },
+      "dc2-app-01": { "dc": "dc2", "host_ip": "10.0.1.10", "consul_retry_join": "10.0.1.21" }
+    }
+  }
+}
+

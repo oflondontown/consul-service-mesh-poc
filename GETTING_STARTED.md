@@ -20,7 +20,19 @@ ansible-inventory -i config/mesh.yml --list > inventory.json
 python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
 ```
 
-3) Runtime: start (on each VM):
+If you don’t have `ansible-inventory`, start from the included example JSON and edit it:
+
+```bash
+python tools/render-mesh-bundles.py --inventory-json config/inventory.example.json -o run/mesh/bundles
+```
+
+3) Deploy-time: expand the bundle on each VM (minimises runtime file writes):
+
+```bash
+python tools/meshctl.py expand --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
+4) Runtime: start (on each VM):
 
 - Server VM (Consul server + mesh gateway):
   - `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
@@ -34,4 +46,3 @@ Verify:
 Next:
 
 - Follow `docs/production-runbook.md` for runtime order, verification, and failover drills.
-

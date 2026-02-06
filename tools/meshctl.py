@@ -72,11 +72,22 @@ def load_bundle(bundle_path: Path) -> dict:
     return bundle
 
 
-def expand_bundle(bundle: dict, *, bundle_path: Path) -> tuple[dict, Path, dict]:
+def expanded_root(bundle: dict) -> Path:
+    host = bundle.get("host") or "unknown-host"
+    role = bundle.get("role") or "unknown-role"
+    return REPO_ROOT / "run" / "mesh" / "expanded" / host / role
+
+
+def expand_bundle(bundle: dict, *, bundle_path: Path, force: bool = False) -> tuple[dict, Path, dict]:
     host = bundle["host"]
     role = bundle["role"]
 
     out_root = REPO_ROOT / "run" / "mesh" / "expanded" / host / role
+    if out_root.exists() and not force:
+        # Don't mutate existing expansion unless forced.
+        env = bundle.get("env", {}) or {}
+        return bundle, out_root, {k: str(v) for k, v in env.items()}
+
     files = bundle.get("files", {}) or {}
     env = bundle.get("env", {}) or {}
 
@@ -93,6 +104,15 @@ def expand_bundle(bundle: dict, *, bundle_path: Path) -> tuple[dict, Path, dict]
         for name, content in templates.items():
             write_text(templates_dir / name, content)
         env["CONSUL_SERVICE_TEMPLATES_DIR"] = str(templates_dir.as_posix())
+
+        # Pre-render templates with the host IP to avoid runtime mutation.
+        host_ip = str(env.get("HOST_IP") or bundle.get("host_ip") or "")
+        if host_ip:
+            rendered_dir = out_root / "rendered"
+            rendered_dir.mkdir(parents=True, exist_ok=True)
+            for p in sorted(templates_dir.glob("*.json")):
+                content = p.read_text(encoding="utf-8").replace("__HOST_IP__", host_ip)
+                (rendered_dir / p.name).write_text(content, encoding="utf-8")
 
     env_path = out_root / "runtime.env"
     write_env(env_path, {k: str(v) for k, v in env.items()})
@@ -190,6 +210,17 @@ def parse_service_template(path: Path) -> tuple[str, str, int | None, list[int]]
     if sidecar_port is None:
         return name, service_id, None, upstream_ports
     return name, service_id, int(sidecar_port), upstream_ports
+
+
+def template_has_sidecar(template_json: str) -> bool:
+    try:
+        data = json.loads(template_json)
+    except json.JSONDecodeError:
+        return False
+    svc = data.get("service", data)
+    connect = svc.get("connect", {}) or {}
+    sidecar = connect.get("sidecar_service", {}) or {}
+    return bool(sidecar.get("port"))
 
 
 def wait_http_ok(url: str, timeout_s: int) -> None:
@@ -408,12 +439,16 @@ def up_app(bundle: dict, env: dict, out_root: Path) -> None:
     consul_image = env.get("CONSUL_IMAGE") or (bundle.get("images") or {}).get("consul") or "docker.io/hashicorp/consul:1.17"
     envoy_image = env.get("ENVOY_IMAGE") or (bundle.get("images") or {}).get("envoy") or "docker.io/envoyproxy/envoy:v1.29-latest"
 
-    templates_dir = Path(env.get("CONSUL_SERVICE_TEMPLATES_DIR", ""))
-    if not templates_dir.is_dir():
-        die(f"Missing CONSUL_SERVICE_TEMPLATES_DIR: {templates_dir}")
-
     rendered_dir = out_root / "rendered"
-    rendered_paths = render_templates(templates_dir, host_ip=host_ip, out_dir=rendered_dir)
+    if not rendered_dir.is_dir():
+        die(
+            f"Missing pre-rendered templates directory: {rendered_dir}. "
+            "Run `python tools/meshctl.py expand --bundle <bundle>` during deployment."
+        )
+
+    rendered_paths = sorted(rendered_dir.glob("*.json"))
+    if not rendered_paths:
+        die(f"No rendered service templates found under: {rendered_dir}")
 
     envoy_admin_offset = int(env.get("ENVOY_ADMIN_PORT_OFFSET", "8000"))
 
@@ -557,7 +592,14 @@ def down_stack(*, dc: str, pod_name: str, volumes: list[str], remove_volumes: bo
 def cmd_up_server(args) -> int:
     bundle_path = Path(args.bundle)
     bundle = load_bundle(bundle_path)
-    bundle, out_root, env = expand_bundle(bundle, bundle_path=bundle_path)
+    out_root = expanded_root(bundle)
+    if not out_root.exists():
+        if args.auto_expand:
+            bundle, out_root, env = expand_bundle(bundle, bundle_path=bundle_path, force=False)
+        else:
+            die(f"Missing expanded directory: {out_root}. Run `python tools/meshctl.py expand --bundle {bundle_path}` during deployment.")
+    env = {k: str(v) for k, v in (bundle.get("env", {}) or {}).items()}
+    env["CONSUL_CONFIG_ENTRIES_DIR"] = str((out_root / "config-entries").as_posix())
     up_server(bundle, env, out_root)
     print(f"Up(server): {bundle.get('host')} ({bundle.get('dc')})")
     return 0
@@ -566,7 +608,7 @@ def cmd_up_server(args) -> int:
 def cmd_down_server(args) -> int:
     bundle_path = Path(args.bundle)
     bundle = load_bundle(bundle_path)
-    _, _, env = expand_bundle(bundle, bundle_path=bundle_path)
+    env = {k: str(v) for k, v in (bundle.get("env", {}) or {}).items()}
     dc = env.get("CONSUL_DATACENTER") or bundle.get("dc") or ""
     down_stack(
         dc=dc,
@@ -581,7 +623,14 @@ def cmd_down_server(args) -> int:
 def cmd_up_app(args) -> int:
     bundle_path = Path(args.bundle)
     bundle = load_bundle(bundle_path)
-    bundle, out_root, env = expand_bundle(bundle, bundle_path=bundle_path)
+    out_root = expanded_root(bundle)
+    if not out_root.exists():
+        if args.auto_expand:
+            bundle, out_root, env = expand_bundle(bundle, bundle_path=bundle_path, force=False)
+        else:
+            die(f"Missing expanded directory: {out_root}. Run `python tools/meshctl.py expand --bundle {bundle_path}` during deployment.")
+    env = {k: str(v) for k, v in (bundle.get("env", {}) or {}).items()}
+    env["CONSUL_SERVICE_TEMPLATES_DIR"] = str((out_root / "services").as_posix())
     up_app(bundle, env, out_root)
     print(f"Up(app): {bundle.get('host')} ({bundle.get('dc')})")
     return 0
@@ -590,25 +639,28 @@ def cmd_up_app(args) -> int:
 def cmd_down_app(args) -> int:
     bundle_path = Path(args.bundle)
     bundle = load_bundle(bundle_path)
-    _, out_root, env = expand_bundle(bundle, bundle_path=bundle_path)
+    out_root = expanded_root(bundle)
+    env = {k: str(v) for k, v in (bundle.get("env", {}) or {}).items()}
     dc = env.get("CONSUL_DATACENTER") or bundle.get("dc") or ""
     # remove volumes for sidecar bootstraps + agent data if asked
     vols = [f"consul-agent-data-{dc}"]
-    templates_dir = Path(env.get("CONSUL_SERVICE_TEMPLATES_DIR", ""))
-    rendered_dir = out_root / "rendered"
-    # If templates exist, derive sidecar bootstrap volume names
-    if templates_dir.is_dir():
-        for p in sorted(templates_dir.glob("*.json")):
-            name, _, sidecar_port, _ = parse_service_template(Path(p))
-            if sidecar_port is None:
-                continue
-            vols.append(f"{name}-envoy-bootstrap-{dc}")
+    # Derive sidecar bootstrap volume names from bundle templates (no filesystem required).
+    templates: dict = ((bundle.get("files") or {}).get("service_templates") or {})
+    for template_name, template_json in templates.items():
+        if not template_has_sidecar(template_json):
+            continue
+        name = Path(template_name).stem
+        vols.append(f"{name}-envoy-bootstrap-{dc}")
     down_stack(dc=dc, pod_name=f"mesh-app-{dc}", volumes=vols, remove_volumes=args.remove_volumes)
-    if rendered_dir.is_dir():
-        # best-effort cleanup
-        for f in rendered_dir.glob("*.json"):
-            f.unlink(missing_ok=True)
     print(f"Down(app): {bundle.get('host')} ({bundle.get('dc')})")
+    return 0
+
+
+def cmd_expand(args) -> int:
+    bundle_path = Path(args.bundle)
+    bundle = load_bundle(bundle_path)
+    bundle, out_root, _ = expand_bundle(bundle, bundle_path=bundle_path, force=args.force)
+    print(f"Expanded: {bundle.get('host')} ({bundle.get('role')}) -> {out_root.as_posix()}")
     return 0
 
 
@@ -677,8 +729,14 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Start/stop the Podman-based Consul mesh using a single per-host bundle JSON.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("up-server", help="Expand bundle, then start server+mesh-gateway using podman")
+    p = sub.add_parser("expand", help="Deploy-time: expand a bundle into run/mesh/expanded/<host>/<role>/ (no containers started)")
     p.add_argument("--bundle", required=True, help="Path to <host>.bundle.json")
+    p.add_argument("--force", action="store_true", help="Overwrite existing expanded output")
+    p.set_defaults(func=cmd_expand)
+
+    p = sub.add_parser("up-server", help="Start server+mesh-gateway using podman (requires pre-expanded bundle output)")
+    p.add_argument("--bundle", required=True, help="Path to <host>.bundle.json")
+    p.add_argument("--auto-expand", action="store_true", help="If expanded output is missing, generate it at runtime (not recommended)")
     p.set_defaults(func=cmd_up_server)
 
     p = sub.add_parser("down-server", help="Stop server pod (optionally remove volumes)")
@@ -686,8 +744,9 @@ def main() -> int:
     p.add_argument("--remove-volumes", action="store_true", help="Also delete Podman volumes (data + bootstraps)")
     p.set_defaults(func=cmd_down_server)
 
-    p = sub.add_parser("up-app", help="Expand bundle, then start agent+sidecars using podman")
+    p = sub.add_parser("up-app", help="Start agent+sidecars using podman (requires pre-expanded bundle output)")
     p.add_argument("--bundle", required=True, help="Path to <host>.bundle.json")
+    p.add_argument("--auto-expand", action="store_true", help="If expanded output is missing, generate it at runtime (not recommended)")
     p.set_defaults(func=cmd_up_app)
 
     p = sub.add_parser("down-app", help="Stop app pod (optionally remove volumes)")

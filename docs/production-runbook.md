@@ -60,6 +60,12 @@ python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/
 - Deploy the repo to each VM (or at least `scripts/`, `tools/`, `docker/consul/client.hcl`).
 - Copy the matching `run/mesh/bundles/<host>.bundle.json` onto each VM (same path is simplest).
 
+4) Expand the bundle on each VM (recommended):
+
+```bash
+python tools/meshctl.py expand --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
 ## Runtime: startup order (Autosys-friendly)
 
 ### 1) Start Consul server + mesh gateway (server VMs)
