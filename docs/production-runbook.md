@@ -73,6 +73,7 @@ python tools/meshctl.py expand --bundle run/mesh/bundles/<this-host>.bundle.json
 Run on each server VM:
 
 ```bash
+python tools/meshctl.py doctor --bundle run/mesh/bundles/<this-host>.bundle.json
 ./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json
 python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json
 ```
@@ -86,6 +87,7 @@ Notes:
 Run on each app VM:
 
 ```bash
+python tools/meshctl.py doctor --bundle run/mesh/bundles/<this-host>.bundle.json
 ./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json
 python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json
 ```

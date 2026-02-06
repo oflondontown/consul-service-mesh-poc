@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import time
+import socket
 from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError, HTTPError
@@ -16,6 +17,10 @@ CLIENT_HCL = REPO_ROOT / "docker" / "consul" / "client.hcl"
 def die(msg: str) -> None:
     print(f"ERROR: {msg}", file=sys.stderr)
     raise SystemExit(2)
+
+
+def warn(msg: str) -> None:
+    print(f"WARN: {msg}", file=sys.stderr)
 
 
 def run_proc(cmd: list[str], *, check: bool = True, capture: bool = False, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -44,6 +49,9 @@ def http_get(url: str, timeout_s: float = 2.0) -> tuple[int, str]:
         body = e.read().decode("utf-8", errors="replace") if e.fp else ""
         return e.code, body
     except URLError as e:
+        return 0, str(e)
+    except OSError as e:
+        # Includes ConnectionResetError, BrokenPipeError, etc.
         return 0, str(e)
 
 
@@ -177,6 +185,13 @@ def require_file(path: Path) -> None:
         die(f"Missing required file: {path}")
 
 
+def require_cmd(name: str) -> None:
+    from shutil import which
+
+    if which(name) is None:
+        die(f"Missing required command in PATH: {name}")
+
+
 def render_templates(templates_dir: Path, *, host_ip: str, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     rendered = []
@@ -223,6 +238,12 @@ def template_has_sidecar(template_json: str) -> bool:
     return bool(sidecar.get("port"))
 
 
+def required_server_entries(config_dir: Path) -> list[Path]:
+    return [
+        config_dir / "proxy-defaults.hcl",
+    ]
+
+
 def wait_http_ok(url: str, timeout_s: int) -> None:
     deadline = time.time() + timeout_s
     last = ""
@@ -233,6 +254,26 @@ def wait_http_ok(url: str, timeout_s: int) -> None:
         last = f"{code}: {body[:200]}"
         time.sleep(1)
     die(f"Timed out waiting for HTTP 200: {url} ({last})")
+
+
+def wait_tcp_connect(host: str, port: int, timeout_s: int) -> None:
+    deadline = time.time() + timeout_s
+    last = ""
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                return
+        except OSError as e:
+            last = str(e)
+            time.sleep(1)
+    die(f"Timed out waiting for TCP connect: {host}:{port} ({last})")
+
+
+def podman_tail_logs(container: str, lines: int = 200) -> str:
+    try:
+        return podman(["logs", "--tail", str(lines), container], capture=True, check=False)
+    except Exception as e:
+        return f"<failed to read podman logs for {container}: {e}>"
 
 
 def up_server(bundle: dict, env: dict, out_root: Path) -> None:
@@ -528,7 +569,8 @@ def up_app(bundle: dict, env: dict, out_root: Path) -> None:
     for name, service_id, sidecar_port, admin_port in sidecars:
         bootstrap_vol = f"{name}-envoy-bootstrap-{dc}"
         ensure_volume(bootstrap_vol)
-        rm_container(f"{name}-envoy-{dc}")
+        envoy_container = f"{name}-envoy-{dc}"
+        rm_container(envoy_container)
 
         podman(
             [
@@ -565,7 +607,7 @@ def up_app(bundle: dict, env: dict, out_root: Path) -> None:
                 "run",
                 "-d",
                 "--name",
-                f"{name}-envoy-{dc}",
+                envoy_container,
                 "--pod",
                 pod_name,
                 "--restart",
@@ -580,6 +622,15 @@ def up_app(bundle: dict, env: dict, out_root: Path) -> None:
                 "test -s /bootstrap/bootstrap.json; exec envoy -c /bootstrap/bootstrap.json ${ENVOY_EXTRA_ARGS:-}",
             ]
         )
+
+        # Ensure sidecar port is actually listening before we return success.
+        # This prevents Consul's "Connect Sidecar Listening" check from immediately failing.
+        try:
+            wait_tcp_connect("127.0.0.1", int(sidecar_port), timeout_s=60)
+        except SystemExit:
+            logs = podman_tail_logs(envoy_container, lines=250)
+            print(f"Envoy logs ({envoy_container}):\n{logs}", file=sys.stderr)
+            raise
 
 
 def down_stack(*, dc: str, pod_name: str, volumes: list[str], remove_volumes: bool) -> None:
@@ -661,6 +712,62 @@ def cmd_expand(args) -> int:
     bundle = load_bundle(bundle_path)
     bundle, out_root, _ = expand_bundle(bundle, bundle_path=bundle_path, force=args.force)
     print(f"Expanded: {bundle.get('host')} ({bundle.get('role')}) -> {out_root.as_posix()}")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    bundle_path = Path(args.bundle)
+    bundle = load_bundle(bundle_path)
+    role = bundle.get("role")
+
+    print(f"Bundle: {bundle_path.as_posix()}")
+    print(f"  host={bundle.get('host')} role={role} dc={bundle.get('dc')} host_ip={bundle.get('host_ip')}")
+
+    require_file(CLIENT_HCL)
+    require_cmd("podman")
+
+    # Podman sanity (don’t fail hard if it errors; some environments restrict it)
+    try:
+        v = podman(["version"], capture=True, check=True)
+        print("Podman: OK (version command succeeded)")
+    except Exception as e:
+        warn(f"Podman version check failed: {e}")
+
+    out_root = expanded_root(bundle)
+    print(f"Expanded dir: {out_root.as_posix()}")
+    if not out_root.is_dir():
+        die(f"Missing expanded dir. Run: python tools/meshctl.py expand --bundle {bundle_path.as_posix()}")
+
+    env_path = out_root / "runtime.env"
+    if not env_path.is_file():
+        die(f"Missing expanded runtime env: {env_path.as_posix()}")
+    print("Expanded env: OK")
+
+    if role == "server":
+        config_dir = out_root / "config-entries"
+        if not config_dir.is_dir():
+            die(f"Missing config entries dir: {config_dir.as_posix()}")
+        for p in required_server_entries(config_dir):
+            if not p.is_file():
+                die(f"Missing required config entry: {p.as_posix()}")
+        print("Config entries: OK")
+
+    if role == "app":
+        rendered_dir = out_root / "rendered"
+        if not rendered_dir.is_dir():
+            die(f"Missing rendered templates dir: {rendered_dir.as_posix()}")
+        rendered = sorted(rendered_dir.glob("*.json"))
+        if not rendered:
+            die(f"No rendered templates found under: {rendered_dir.as_posix()}")
+        # Parse each template to validate shape
+        sidecar_count = 0
+        for p in rendered:
+            name, service_id, sidecar_port, upstream_ports = parse_service_template(p)
+            if sidecar_port is not None:
+                sidecar_count += 1
+        print(f"Rendered templates: OK ({len(rendered)} services, {sidecar_count} sidecars)")
+
+    print("Doctor: OK")
     return 0
 
 
@@ -757,6 +864,10 @@ def main() -> int:
     p = sub.add_parser("verify", help="Basic readiness check (server leader / app agent reachable)")
     p.add_argument("--bundle", required=True, help="Path to <host>.bundle.json")
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("doctor", help="Preflight check: validate bundle + expanded artifacts + basic Podman availability")
+    p.add_argument("--bundle", required=True, help="Path to <host>.bundle.json")
+    p.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args()
     return int(args.func(args))

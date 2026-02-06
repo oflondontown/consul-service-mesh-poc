@@ -62,6 +62,7 @@ On each VM (Autosys-friendly):
 Verify:
 
 - `python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json`
+- Preflight (before first start): `python tools/meshctl.py doctor --bundle run/mesh/bundles/<this-host>.bundle.json`
 
 Stop:
 
