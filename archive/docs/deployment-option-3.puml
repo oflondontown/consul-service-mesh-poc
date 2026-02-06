@@ -20,4 +20,3 @@ Works for PoC.\nEach DC control-plane is a SPOF (1 Consul server).\nResource con
 end note
 
 @enduml
-

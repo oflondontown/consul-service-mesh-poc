@@ -111,7 +111,7 @@ wait_for_consul_dc() {
   done
   echo "ERROR: Consul datacenters does not include ${dc}. Got: ${dcs:-<empty>}" >&2
   echo "If you're running only one DC (or the single-VM POC stack), cross-DC failover cannot work." >&2
-  echo "For a 1-laptop cross-DC demo, start: ./scripts/start.sh" >&2
+  echo "For supported usage, follow GETTING_STARTED.md / docs/production-runbook.md." >&2
   return 1
 }
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env sh
+# ARCHIVED: deprecated Compose wrapper (see GETTING_STARTED.md).
 set -eu
-
-REMOVE_VOLUMES="${REMOVE_VOLUMES:-0}"
 
 compose() {
   if ! command -v podman >/dev/null 2>&1; then
@@ -23,8 +22,4 @@ compose() {
   exit 1
 }
 
-if [ "$REMOVE_VOLUMES" = "1" ]; then
-  compose down --remove-orphans -v
-else
-  compose down --remove-orphans
-fi
+compose ps

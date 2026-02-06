@@ -1,5 +1,8 @@
 #!/usr/bin/env sh
+# ARCHIVED: deprecated Compose wrapper (see GETTING_STARTED.md).
 set -eu
+
+NO_BUILD="${NO_BUILD:-0}"
 
 compose() {
   if ! command -v podman >/dev/null 2>&1; then
@@ -21,4 +24,8 @@ compose() {
   exit 1
 }
 
-compose ps
+if [ "$NO_BUILD" = "1" ]; then
+  compose up -d
+else
+  compose up -d --build
+fi

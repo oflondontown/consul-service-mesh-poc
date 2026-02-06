@@ -1,3 +1,4 @@
+# ARCHIVED: deprecated Compose overlay (dc1-only).
 services:
   itch-consumer-envoy-bootstrap:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}

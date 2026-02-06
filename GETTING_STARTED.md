@@ -1,42 +1,37 @@
-# Getting Started (recommended paths)
+# Getting Started (supported path)
 
-This repo contains a few different ways to run the MVP. If you're new to it, use **one** of these two paths and ignore the rest.
+This repo’s supported (maintained) path is the **production-shaped** model:
 
-## Path 1 (laptop demo): everything in containers
+- your apps run as **host processes** on app VMs
+- Consul/Envoy run as **Podman containers** alongside them
+- start/stop is **scriptable** (Autosys-friendly) and does not require Compose
 
-Use this if you want the fastest way to see **cross-DC failover** on a single machine.
+Deprecated run modes (Compose demos, reference configs) have been moved to `archive/`.
 
-- Follow: `quickstart/README.md` → **Option A**
-- Requires: Podman + a Compose frontend (`podman compose` plugin or `podman-compose`)
+## Steps
 
-## Path 2 (production-shaped): legacy apps on host, mesh in containers (recommended)
+1) Create your mesh config:
+   - Copy `config/mesh.example.yml` to `config/mesh.yml` and edit hostnames/IPs and the service catalog.
 
-Use this if you want the closest match to your production model:
+2) Deploy-time: render one bundle JSON per host (control machine):
 
-- Apps run as **host processes** (your real Spring Boot / Java processes).
-- Consul/Envoy run in **Podman containers** alongside them.
-- Start/stop is **scriptable** (Autosys-friendly) and does **not** require Compose.
+```bash
+ansible-inventory -i config/mesh.yml --list > inventory.json
+python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
+```
 
-Recommended variant: **one bundle JSON per host** (single runtime input).
+3) Runtime: start (on each VM):
 
-1) Define the system in one inventory-style YAML:
-   - Start from: `config/mesh.example.yml` (copy to `config/mesh.yml` and edit)
+- Server VM (Consul server + mesh gateway):
+  - `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- App VM (Consul agent + Envoy sidecars):
+  - `./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
 
-2) Deploy-time: render per-host bundles (control machine):
-   - Requires `ansible-inventory` on the control machine (or a pre-generated `inventory.json`)
-   - `ansible-inventory -i config/mesh.yml --list > inventory.json`
-   - `python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles`
+Verify:
 
-3) Runtime: start/stop (on each VM)
-   - Server VM (Consul server + mesh gateway):
-     - `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
-   - App VM (Consul agent + Envoy sidecars):
-     - `./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+- `python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json`
 
-4) Verify (optional)
-   - `python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json`
+Next:
 
-For details and troubleshooting, see:
-- `quickstart/README.md` → **Option C**
-- `README.md` → **Option 2: single bundle per host**
-- `docs/production-runbook.md`
+- Follow `docs/production-runbook.md` for runtime order, verification, and failover drills.
+

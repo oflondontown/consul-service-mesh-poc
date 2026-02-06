@@ -9,7 +9,7 @@ usage() {
 Usage: $0 --bundle <path>
 
 Expands a per-host bundle JSON into runtime files under run/mesh/expanded/ and
-stops the app stack by calling scripts/prod/podman-down-app.sh.
+stops the app stack using `tools/meshctl.py` (Podman CLI).
 EOF
 }
 
@@ -47,4 +47,3 @@ if [[ -z "${PYTHON_BIN}" ]]; then
 fi
 
 exec "${PYTHON_BIN}" "${REPO_ROOT}/tools/meshctl.py" down-app --bundle "${BUNDLE}"
-

@@ -1,3 +1,4 @@
+# ARCHIVED: deprecated Compose-based single-VM PoC stack (apps on VM, mesh in containers).
 #
 # Single-VM POC mesh stack (apps run on the VM)
 # - Runs Consul server + mesh gateway + Envoy sidecars in containers on this VM.

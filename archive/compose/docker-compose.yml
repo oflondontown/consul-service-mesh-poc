@@ -1,3 +1,4 @@
+# ARCHIVED: deprecated Compose-based demo stack (see GETTING_STARTED.md).
 services:
   consul-dc1:
     image: docker.io/hashicorp/consul:1.17

@@ -1,132 +1,88 @@
-# Quickstart (copy/paste)
+# Quickstart (supported path)
 
-This folder is a **copy/paste** guide for running and testing the MVP from **Git Bash on Windows**.
+This quickstart focuses on the **supported** production-shaped mode:
 
-## Prereqs (Windows + Git Bash)
+- apps run as host processes on app VMs
+- Consul/Envoy run as Podman containers
+- runtime start/stop uses `meshctl` (no Compose)
 
-- Podman installed (Podman Desktop is fine)
-- Start the Podman VM (Windows/macOS):
-  - First time only: `podman machine init`
-  - Every time: `podman machine start`
-- Java 17 available (for the host-process mock services)
-- Gradle available (`./scripts/mock/build-jars.sh` uses `./gradlew` if present, otherwise `gradle`)
+Deprecated demos and old env templates have been moved to `archive/`.
 
-## Option A (recommended): 1-laptop demo (2 DCs + apps in containers)
+## Prereqs
 
-This is the fastest way to **see cross-datacenter failover** on one machine.
+- Podman 4.9+
+- Python 3
+- Java 17 (only if you want to run the mock apps)
+- Deploy-time only: `ansible-inventory` (or a pre-generated `inventory.json`)
 
-Requires a Compose frontend:
-- `podman compose` (plugin) **or**
-- `podman-compose`
+## 1) Create your mesh config
 
-Commands (from repo root):
+- Copy `config/mesh.example.yml` to `config/mesh.yml` and edit hostnames/IPs and the `service_catalog`.
 
-- Start everything: `./scripts/start.sh`
-- Open UIs:
-  - dc1 UI: `http://localhost:8500/ui`
-  - dc2 UI: `http://localhost:8501/ui`
-- Run the failover demo: `./scripts/smoke-test.sh`
-- Stop: `./scripts/stop.sh`
-
-## Option B: production-shaped (apps as host processes, mesh in containers)
-
-This is the closest to your target topology:
-
-- This is **not** a 1-laptop/1-VM setup. It assumes **separate VMs/hosts** (each with its own port space). If you want to demo cross-DC failover on one laptop, use **Option A**.
-
-- Per DC:
-  - **1x Consul server VM** running `consul-server + mesh-gateway` containers
-  - **1x application VM** running `consul-agent + envoy sidecars` containers
-  - Apps (`webservice`, `ordermanager`, `refdata`, `itch-feed`) run as **host processes** on the application VM
-
-This option does **not** require Compose (it uses Podman pods via wrapper scripts).
-
-### 1) Edit env files (per VM)
-
-These files are templates. Update the `HOST_IP` and the peer IPs to match your environment:
-
-- dc1 Consul server VM: `quickstart/env/prod/server.dc1.env`
-- dc2 Consul server VM: `quickstart/env/prod/server.dc2.env`
-- dc1 application VM: `quickstart/env/prod/app.dc1.env`
-- dc2 application VM: `quickstart/env/prod/app.dc2.env`
-
-### 2) Start the mesh containers
-
-Run on the **Consul server VMs**:
-
-- dc1 server VM: `./scripts/prod/podman-up-server.sh --env-file quickstart/env/prod/server.dc1.env`
-- dc2 server VM: `./scripts/prod/podman-up-server.sh --env-file quickstart/env/prod/server.dc2.env`
-
-Run on the **application VMs**:
-
-- dc1 app VM: `./scripts/prod/podman-up-app.sh --env-file quickstart/env/prod/app.dc1.env`
-- dc2 app VM: `./scripts/prod/podman-up-app.sh --env-file quickstart/env/prod/app.dc2.env`
-
-### 3) Start mock apps as host processes (application VMs)
-
-Run on **each** application VM:
-
-- Build jars: `./scripts/mock/build-jars.sh`
-- Start mocks:
-  - dc1 app VM: `./scripts/mock/start-mocks.sh --dc dc1`
-  - dc2 app VM: `./scripts/mock/start-mocks.sh --dc dc2`
-
-### 4) View the Consul UI (server VMs)
-
-On each server VM, Consul UI is published to `127.0.0.1:8500` on that VM.
-
-- Local on the VM: `http://127.0.0.1:8500/ui`
-- From your laptop (SSH tunnel example):
-  - dc1: `ssh -L 8500:127.0.0.1:8500 <user>@<dc1-consul-server>`
-  - dc2: `ssh -L 8501:127.0.0.1:8500 <user>@<dc2-consul-server>` then open `http://localhost:8501/ui`
-
-### 5) Test failover (run on dc1 application VM)
-
-- Baseline: `curl -fsS http://127.0.0.1:8080/api/refdata/demo`
-- Trigger failover: `./scripts/failover-refdata.sh`
-- Verify traffic is using dc2 refdata: `curl -fsS http://127.0.0.1:8080/api/refdata/demo`
-- Restore: `./scripts/restore-refdata.sh`
-
-Or run the scripted flow: `./scripts/smoke-test.sh`
-
-### 6) Tear down
-
-Stop mocks (on each app VM):
-
-- dc1: `./scripts/mock/stop-mocks.sh --dc dc1`
-- dc2: `./scripts/mock/stop-mocks.sh --dc dc2`
-
-Stop containers:
-
-- dc1 app VM: `./scripts/prod/podman-down-app.sh --env-file quickstart/env/prod/app.dc1.env`
-- dc2 app VM: `./scripts/prod/podman-down-app.sh --env-file quickstart/env/prod/app.dc2.env`
-- dc1 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc1.env`
-- dc2 server VM: `./scripts/prod/podman-down-server.sh --env-file quickstart/env/prod/server.dc2.env`
-
-## Option C: production-shaped, but with 1 bundle JSON per host (recommended for maintainability)
-
-This option keeps the runtime interface very small:
-
-- Maintain one inventory-style YAML (example: `config/mesh.example.yml`)
-- Render one **bundle JSON per host** at deploy time
-- Start/stop using `meshctl-*` wrappers (no per-service `*.hcl`/`*.json` to maintain by hand)
-
-### Render bundles (deploy/control machine)
+## 2) Render bundles (deploy/control machine)
 
 ```bash
-ansible-inventory --version
-ansible-inventory -i config/mesh.example.yml --list > inventory.json
+ansible-inventory -i config/mesh.yml --list > inventory.json
 python tools/render-mesh-bundles.py --inventory-json inventory.json -o run/mesh/bundles
 ```
 
-Copy `run/mesh/bundles/<host>.bundle.json` to each target host (or deploy the repo with that folder included).
+Copy `run/mesh/bundles/<host>.bundle.json` to each matching VM.
 
-### Start/stop (on each host)
+## 3) Start the mesh (runtime)
 
-- Server VM: `./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
-- App VM: `./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+On each server VM:
 
-Stop:
+```bash
+./scripts/prod/meshctl-up-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json
+python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json
+```
 
-- Server VM: `./scripts/prod/meshctl-down-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
-- App VM: `./scripts/prod/meshctl-down-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json`
+On each app VM:
+
+```bash
+./scripts/prod/meshctl-up-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json
+python tools/meshctl.py verify --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
+## 4) Start the mock apps (optional)
+
+On each app VM:
+
+```bash
+./scripts/mock/build-jars.sh
+./scripts/mock/start-mocks.sh --dc dc1   # on dc1 app VM
+./scripts/mock/start-mocks.sh --dc dc2   # on dc2 app VM
+```
+
+## 5) Run the smoke test
+
+On dc1 app VM:
+
+```bash
+./scripts/smoke-test.sh
+```
+
+Override endpoints if needed:
+
+```bash
+WEBSERVICE_URL=http://127.0.0.1:8080 CONSUL_HTTP_ADDR=http://127.0.0.1:8500 ./scripts/smoke-test.sh
+```
+
+## 6) Tear down
+
+Stop mocks:
+
+```bash
+./scripts/mock/stop-mocks.sh --dc dc1
+./scripts/mock/stop-mocks.sh --dc dc2
+```
+
+Stop mesh:
+
+```bash
+./scripts/prod/meshctl-down-app.sh --bundle run/mesh/bundles/<this-host>.bundle.json
+./scripts/prod/meshctl-down-server.sh --bundle run/mesh/bundles/<this-host>.bundle.json
+```
+
+For more detail and troubleshooting, see `docs/production-runbook.md`.
+

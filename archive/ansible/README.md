@@ -1,4 +1,4 @@
-# Ansible integration (optional)
+# ARCHIVED: prior Ansible integration docs (bundle-per-host replaced this).
 
 This repo already includes runnable Podman scripts under `scripts/prod/`. If you deploy with Ansible, you can drive **both**:
 

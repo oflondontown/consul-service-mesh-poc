@@ -1,3 +1,4 @@
+# ARCHIVED: deprecated Compose-based production-shaped stack (use bundle-per-host instead).
 services:
   consul-agent:
     image: ${CONSUL_IMAGE:-docker.io/hashicorp/consul:1.17}

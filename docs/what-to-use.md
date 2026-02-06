@@ -16,10 +16,7 @@ Use this if:
 - `scripts/prod/meshctl-up-*.sh`, `scripts/prod/meshctl-down-*.sh`: Autosys-friendly wrappers
 
 **Still required from the existing repo**
-- `scripts/prod/podman-up-server.sh`, `scripts/prod/podman-down-server.sh`
-- `scripts/prod/podman-up-app.sh`, `scripts/prod/podman-down-app.sh`
-- `scripts/prod/lib-podman.sh`
-- `docker/consul/client.hcl` (the Consul agent/server baseline config that enables Connect)
+- `docker/consul/client.hcl` (baseline Consul config that enables Connect)
 
 **Generated at deploy-time / runtime**
 - `run/mesh/bundles/*.bundle.json` (deploy-time)
@@ -27,17 +24,21 @@ Use this if:
 
 ## Laptop demo (everything containerised)
 
-Use this if you want a quick demo on one machine.
+The prior Compose-based laptop demo has been archived:
 
-- `quickstart/README.md` -> Option A
-- Uses the Compose files (`docker-compose.yml`, etc.)
+- `archive/compose/`
+- `archive/compose/scripts/`
 
 ## Reference / legacy config directories
 
 These exist mainly to support the containerised demo and/or as examples. If you are using the **bundle-per-host** approach, you do **not** need to edit these by hand:
 
-- `docker/consul/services/**` and `docker/consul/services-vmhost/**` (service registration templates)
-- `docker/consul/config-entries/**` (service-defaults/intentions/resolvers)
-- `docker-compose*.yml` (Compose-based launches)
+- `archive/docker/consul/services/**` and `archive/docker/consul/services-vmhost/**` (service registration templates)
+- `archive/docker/consul/config-entries/**` (service-defaults/intentions/resolvers)
+- `archive/compose/*.yml` (Compose-based launches)
 
-The bundle-per-host approach generates the equivalents into `run/mesh/expanded/...` and points the runtime scripts at those generated directories.
+The bundle-per-host approach generates the equivalents into `run/mesh/expanded/...` and uses those generated directories at runtime.
+
+## Archive
+
+If you see a file path mentioned in an older doc but it’s not listed above, check `archive/` (deprecated run modes and reference configs live there).
